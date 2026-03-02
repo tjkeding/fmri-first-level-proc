@@ -259,21 +259,36 @@ def validate_config(raw_config, logger):
                 logger.error("[%s] Cannot create out_dir '%s': %s", label, out_dir, e)
                 sys.exit(1)
 
-        # Contrasts validation (task_act and task_conn) — functions: null = disabled
-        if "contrasts" in block:
-            if atype not in ("task_act", "task_conn"):
-                logger.warning("[%s] contrasts block is only supported for task_act and task_conn; ignoring.", label)
-            else:
-                contrasts = block["contrasts"]
-                funcs = contrasts.get("functions")
-                labels = contrasts.get("labels")
+        # Contrasts validation — functions: null = disabled
+        # task_act: contrasts live at block level (block["contrasts"])
+        # task_conn: contrasts live under connectivity (block["connectivity"]["contrasts"])
+        if atype == "task_act" and "contrasts" in block:
+            contrasts = block["contrasts"]
+            funcs = contrasts.get("functions")
+            labels = contrasts.get("labels")
+            if funcs is not None and labels is not None:
+                if len(funcs) != len(labels):
+                    logger.error("[%s] contrasts.functions and contrasts.labels must be the same length.", label)
+                    sys.exit(1)
+            elif funcs is not None and labels is None:
+                logger.error("[%s] contrasts.functions provided but contrasts.labels is missing.", label)
+                sys.exit(1)
+        elif atype == "task_conn":
+            tc_conn = block.get("connectivity", {}) or {}
+            tc_contrasts = tc_conn.get("contrasts")
+            if tc_contrasts is not None:
+                funcs = tc_contrasts.get("functions")
+                labels = tc_contrasts.get("labels")
                 if funcs is not None and labels is not None:
                     if len(funcs) != len(labels):
-                        logger.error("[%s] contrasts.functions and contrasts.labels must be the same length.", label)
+                        logger.error("[%s] connectivity.contrasts.functions and connectivity.contrasts.labels must be the same length.", label)
                         sys.exit(1)
                 elif funcs is not None and labels is None:
-                    logger.error("[%s] contrasts.functions provided but contrasts.labels is missing.", label)
+                    logger.error("[%s] connectivity.contrasts.functions provided but connectivity.contrasts.labels is missing.", label)
                     sys.exit(1)
+        elif "contrasts" in block and atype not in ("task_act",):
+            logger.warning("[%s] contrasts block at the analysis level is only supported for task_act; "
+                           "for task_conn, place contrasts under connectivity. Ignoring.", label)
 
         # HRF model validation (task_act and task_conn only)
         if atype in ("task_act", "task_conn"):
@@ -383,6 +398,8 @@ def _merge_global_into_block(block, global_cfg):
             merged_conn[k] = bool(val) if val is not None else False
         else:
             merged_conn[k] = val  # None if absent
+    # Pass through contrasts sub-dict (task_conn connectivity contrasts)
+    merged_conn["contrasts"] = b_conn.get("contrasts", None)
     merged["connectivity"] = merged_conn
 
     return merged
@@ -397,7 +414,7 @@ def build_namespace(merged_block, logger):
     paths = merged_block.get("paths", {})
     extraction = merged_block.get("extraction", None)
     connectivity = merged_block.get("connectivity", {}) or {}
-    contrasts = merged_block.get("contrasts", None)
+    contrasts = merged_block.get("contrasts", None)  # task_act block-level contrasts
 
     ns = argparse.Namespace()
 
@@ -481,10 +498,11 @@ def build_namespace(merged_block, logger):
         ns.include_motion_derivs = bool(merged_block.get("include_motion_derivs", False))
         ns.use_tissue_derivs = bool(merged_block.get("use_tissue_derivs", False))
 
-        # Contrasts — functions: null = disabled
-        if contrasts is not None:
-            funcs = contrasts.get("functions")
-            labels = contrasts.get("labels")
+        # Connectivity contrasts — read from connectivity sub-dict
+        conn_contrasts = connectivity.get("contrasts", None)
+        if conn_contrasts is not None:
+            funcs = conn_contrasts.get("functions")
+            labels = conn_contrasts.get("labels")
             if funcs is not None and labels is not None:
                 ns.contrast_functions = funcs
                 ns.contrast_labels = labels

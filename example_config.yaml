@@ -115,19 +115,6 @@ analyses:
     include_motion_derivs: false # true = use first 12 columns (base + derivs); false = use first 6 columns only
     use_tissue_derivs: false     # true = include first temporal derivatives of tissue signals (CSF/WM) as additional regressors
 
-    # -- Contrasts --
-    # Connectivity contrasts: linear combinations of condition-level connectivity outputs.
-    # Requires connectivity to be enabled (calc_conn != null). Contrast conditions must
-    # reference conditions in cond_beta_labels that have valid connectivity output files.
-    # functions: null = disabled; list of equations = enabled
-    contrasts:
-      functions:
-        - "1*stimFear-1*stimNeu"
-        - "1*stimSad-1*stimNeu"
-      labels:
-        - "Fear-Neutral"
-        - "Sad-Neutral"
-
     # -- Extraction --
     extraction:
       extract_pbseries: true     # true = extract parcel beta series, false = skip
@@ -139,6 +126,18 @@ analyses:
       conn_out_file_pre: "subj001_nback_baseline_Shen368"
       pcorr: false               # use partial correlation
       fishZ: true                # use Fisher Z transform on correlation coefficients
+      # -- Connectivity Contrasts --
+      # Linear combinations of condition-level connectivity outputs.
+      # Requires connectivity to be enabled (calc_conn != null). Contrast conditions must
+      # reference conditions in cond_beta_labels that have valid connectivity output files.
+      # functions: null = disabled; list of equations = enabled
+      contrasts:
+        functions:
+          - "1*stimFear-1*stimNeu"
+          - "1*stimSad-1*stimNeu"
+        labels:
+          - "Fear-Neutral"
+          - "Sad-Neutral"
 
   # ========================================================================
   # RESTING-STATE CONNECTIVITY (type: rest_conn)

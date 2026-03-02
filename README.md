@@ -116,15 +116,20 @@ Linear contrasts can be applied to condition-level connectivity outputs (matrice
 - Contrast conditions must reference conditions in `cond_beta_labels`
 - Each referenced condition must have a valid connectivity output file on disk
 
-**Configuration:**
+**Configuration** (nested under `connectivity` in the analysis block):
 ```yaml
-contrasts:
-  functions:
-    - "1*stimFear-1*stimNeu"
-    - "1*stimSad-1*stimNeu"
-  labels:
-    - "Fear-Neutral"
-    - "Sad-Neutral"
+connectivity:
+  calc_conn: "parcellated"
+  conn_out_file_pre: "subj001_Shen368"
+  pcorr: false
+  fishZ: true
+  contrasts:
+    functions:
+      - "1*stimFear-1*stimNeu"
+      - "1*stimSad-1*stimNeu"
+    labels:
+      - "Fear-Neutral"
+      - "Sad-Neutral"
 ```
 
 **Output naming:** Connectivity contrast outputs use the same naming convention as condition-level outputs, with the contrast label replacing the condition name (sanitized for filesystem safety). For example, with `conn_out_file_pre: "subj001_Shen368"` and `fishZ: true`:

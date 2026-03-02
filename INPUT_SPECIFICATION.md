@@ -169,22 +169,26 @@ Same as `task_act`: `CSF_path`, `WM_path`.
 |---|---|---|---|
 | `custom_hrf` | str or null | `null` | Custom AFNI HRF model string. Required when `hrf_model: custom`. |
 | `use_tissue_derivs` | bool | `false` | `true` = include first temporal derivatives of tissue signals (CSF, WM) as additional nuisance regressors. Only computed for tissue paths that are not null. |
-| `contrasts` | dict or null | `null` | Connectivity contrast specification. See below. |
 | `extraction` | dict or null | `null` | Parcel beta series extraction. See below. |
-| `connectivity` | dict or null | `null` | Functional connectivity computation. See below. |
+| `connectivity` | dict or null | `null` | Functional connectivity computation (including optional connectivity contrasts). See below. |
 
 ### Contrasts (Connectivity)
 
-Linear contrasts applied to condition-level connectivity outputs (post-connectivity). These compute weighted linear combinations of condition-specific connectivity matrices (parcellated) or seed-to-voxel maps.
+Linear contrasts applied to condition-level connectivity outputs (post-connectivity). These compute weighted linear combinations of condition-specific connectivity matrices (parcellated) or seed-to-voxel maps. Contrasts are specified as a sub-block within `connectivity`:
 
 ```yaml
-contrasts:
-  functions:          # list of str or null; null = contrasts disabled
-    - "1*stimFear-1*stimNeu"
-    - "1*stimSad-1*stimNeu"
-  labels:             # list of str; must be same length as functions
-    - "Fear-Neutral"
-    - "Sad-Neutral"
+connectivity:
+  calc_conn: "parcellated"
+  conn_out_file_pre: "subj001_Shen368"
+  pcorr: false
+  fishZ: true
+  contrasts:
+    functions:          # list of str or null; null = contrasts disabled
+      - "1*stimFear-1*stimNeu"
+      - "1*stimSad-1*stimNeu"
+    labels:             # list of str; must be same length as functions
+      - "Fear-Neutral"
+      - "Sad-Neutral"
 ```
 
 - `functions`: list of contrast equations using condition labels from `cond_beta_labels`. Set to `null` to disable.
@@ -220,6 +224,11 @@ connectivity:
   conn_out_file_pre: "subj001"     # str; output filename prefix
   pcorr: false                     # bool; true = partial correlation
   fishZ: true                      # bool; true = Fisher Z-transform
+  contrasts:                       # dict or null; connectivity contrasts (see above)
+    functions:
+      - "1*stimFear-1*stimNeu"
+    labels:
+      - "Fear-Neutral"
 ```
 
 Requires `template_path` in global settings. For `seed_to_voxel`, the template must be a binary mask (single ROI). For `parcellated`, the template must contain >= 2 integer-labeled ROIs.
