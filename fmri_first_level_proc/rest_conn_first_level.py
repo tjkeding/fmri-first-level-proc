@@ -8,8 +8,8 @@
 # 4. (optional) Runs functional connectivity analysis with AFNI's 3dNetCorr
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.0
-# Last updated: 02/17/26
+# Version: 2.1
+# Last updated: 03/02/26
 # ============================================================================
 '''
 REQUIREMENTS:

@@ -5,12 +5,13 @@
 # Common functions used across task_act, task_conn, and rest_conn pipelines.
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.0
-# Last updated: 02/17/26
+# Version: 2.1
+# Last updated: 03/02/26
 # ============================================================================
 
 import json
 import os
+import re
 import sys
 import shutil
 import logging
@@ -668,7 +669,7 @@ def notch_filter_motion(motion_path, tr, stopband, out_dir, out_prefix, label, l
     cmd = ["3dTproject",
            "-polort", "-1",
            "-dt", str(tr),
-           "-input", f"{motion_6col}\\'",
+           "-input", f"{motion_6col}'",
            "-stopband", str(stopband[0]), str(stopband[1]),
            "-prefix", out_path]
 
@@ -1113,6 +1114,204 @@ def compute_dof(censor_path, n_regressors, logger):
                      "or reducing the model complexity.", dof)
         sys.exit(1)
     return dof
+
+
+# ----------------------------------------------------------------------------
+# Contrast Parsing
+# ----------------------------------------------------------------------------
+
+def valid_contrast_functions(contrast_list, contrast_labs_list, cond_list, logger=None):
+    """Parse and validate linear contrast equations.
+
+    Accepted format: ``coef*COND[+-coef*COND...]``
+    Examples: ``1*stimA-1*stimB``, ``-1*A+0.5*B+0.5*C``, ``+1*X-1*Y``
+
+    Returns a list of dicts, one per contrast, each with keys 'COEFS' (list of
+    str coefficients with signs) and 'CONDS' (list of condition names).
+    """
+
+    # Check that contrast_list and contrast_labs_list are same size
+    if len(contrast_list) != len(contrast_labs_list):
+        logger.error("Every contrast in --contrast_functions must have a label in --contrast_labels")
+        sys.exit(1)
+
+    # Regex for a single term: optional sign, a numeric coefficient, *, condition name
+    _TERM_RE = re.compile(r'([+-]?\d*\.?\d+)\*(\w+)')
+    # Regex that matches the entire valid contrast string (one or more terms)
+    _FULL_RE = re.compile(r'^([+-]?\d*\.?\d+\*\w+)([+-]\d*\.?\d+\*\w+)*$')
+
+    out = []
+    for contrast in contrast_list:
+        raw = contrast
+        contrast = contrast.replace(" ", "")
+
+        if not contrast:
+            logger.error("Empty contrast equation (original: '%s').", raw)
+            sys.exit(1)
+
+        # Validate the entire string matches the expected grammar
+        if not _FULL_RE.match(contrast):
+            # Provide a targeted diagnostic
+            if '*' not in contrast:
+                logger.error("Contrast '%s' is missing coefficients. "
+                             "Every condition must have an explicit coefficient "
+                             "(e.g. '1*stimA-1*stimB', not 'stimA-stimB').", raw)
+            elif re.search(r'[*/]{2,}', contrast):
+                logger.error("Contrast '%s' has consecutive operators.", raw)
+            elif contrast.endswith(('+', '-', '*')):
+                logger.error("Contrast '%s' has a trailing operator.", raw)
+            elif re.search(r'[^+\-\d.*\w]', contrast):
+                bad = re.findall(r'[^+\-\d.*\w]', contrast)
+                logger.error("Contrast '%s' contains invalid characters: %s", raw, bad)
+            else:
+                logger.error("Contrast '%s' could not be parsed. "
+                             "Expected format: coef*COND[+-coef*COND...] "
+                             "(e.g. '1*stimA-1*stimB').", raw)
+            sys.exit(1)
+
+        matches = _TERM_RE.findall(contrast)
+
+        coefs = [m[0] for m in matches]
+        conds = [m[1] for m in matches]
+
+        # Check all contrast conditions exist in cond_list
+        for item in conds:
+            if item not in cond_list:
+                logger.error("Contrast '%s' references condition '%s' which is not in --cond_labels (%s).",
+                             raw, item, cond_list)
+                sys.exit(1)
+
+        # Validate coefficients are valid floats
+        for item in coefs:
+            try:
+                float(item)
+            except ValueError:
+                logger.error("Contrast '%s' has invalid coefficient '%s'.", raw, item)
+                sys.exit(1)
+
+        # Warn about zero coefficients (technically valid but likely a mistake)
+        for coef, cond in zip(coefs, conds):
+            if float(coef) == 0.0:
+                logger.warning("Contrast '%s': coefficient for '%s' is 0 — "
+                               "this condition will have no effect.", raw, cond)
+
+        out.append({'COEFS': coefs, 'CONDS': conds})
+    return out
+
+
+# ----------------------------------------------------------------------------
+# Connectivity Contrast Helpers
+# ----------------------------------------------------------------------------
+
+def sanitize_filename_label(label):
+    """Replace filesystem-unsafe characters with underscores.
+
+    Preserves alphanumerics, hyphens, underscores, and periods. All other
+    characters (including spaces, slashes, colons) are replaced with '_'.
+    Consecutive underscores are collapsed.
+    """
+    sanitized = re.sub(r'[^\w.\-]', '_', label)
+    sanitized = re.sub(r'_+', '_', sanitized)
+    return sanitized.strip('_')
+
+
+def build_conn_output_path(out_dir, conn_out_file_pre, condition, fishZ, pcorr, calc_conn):
+    """Construct the expected connectivity output path for a given condition.
+
+    Parameters
+    ----------
+    out_dir : str
+        Output directory.
+    conn_out_file_pre : str
+        Connectivity output file prefix.
+    condition : str
+        Condition name.
+    fishZ : bool
+        Whether Fisher Z-transform was applied.
+    pcorr : bool
+        Whether partial correlation was used.
+    calc_conn : str
+        Either 'parcellated' or 'seed_to_voxel'.
+
+    Returns
+    -------
+    str
+        Full path to the expected connectivity output file.
+    """
+    prefix = f"{conn_out_file_pre}_{condition}"
+    out_path = os.path.join(out_dir, prefix)
+
+    if calc_conn == "parcellated":
+        if fishZ and pcorr:
+            out_path += "_pcorr_fishZ_mat.txt"
+        elif fishZ:
+            out_path += "_fishZ_mat.txt"
+        elif pcorr:
+            out_path += "_pcorr_mat.txt"
+        else:
+            out_path += "_corr_mat.txt"
+    else:  # seed_to_voxel
+        if fishZ and pcorr:
+            out_path += "_pcorr_fishZ.nii.gz"
+        elif fishZ:
+            out_path += "_fishZ.nii.gz"
+        elif pcorr:
+            out_path += "_pcorr.nii.gz"
+        else:
+            out_path += "_corr.nii.gz"
+
+    return out_path
+
+
+def compute_matrix_contrast(condition_matrix_paths, coefs, out_path, logger):
+    """Apply a weighted linear combination to tab-delimited square connectivity matrices.
+
+    Parameters
+    ----------
+    condition_matrix_paths : list of str
+        Paths to the condition-specific connectivity matrices (tab-delimited text).
+    coefs : list of str
+        Coefficients corresponding to each matrix (as strings, will be cast to float).
+    out_path : str
+        Path to save the resulting contrast matrix.
+    logger : logging.Logger
+
+    Raises
+    ------
+    SystemExit
+        If matrices have mismatched dimensions or cannot be loaded.
+    """
+    matrices = []
+    for path in condition_matrix_paths:
+        try:
+            mat = np.loadtxt(path, delimiter='\t')
+        except Exception as e:
+            logger.error("Could not load connectivity matrix '%s': %s", path, e)
+            sys.exit(1)
+        matrices.append(mat)
+
+    # Validate all matrices have identical dimensions
+    ref_shape = matrices[0].shape
+    for i, mat in enumerate(matrices[1:], start=1):
+        if mat.shape != ref_shape:
+            logger.error("Connectivity matrix dimension mismatch: '%s' has shape %s, "
+                         "expected %s (from '%s').",
+                         condition_matrix_paths[i], mat.shape,
+                         ref_shape, condition_matrix_paths[0])
+            sys.exit(1)
+
+    # Compute weighted linear combination
+    result = np.zeros(ref_shape)
+    for coef_str, mat in zip(coefs, matrices):
+        result += float(coef_str) * mat
+
+    # Write using standard I/O (avoids numpy DataSource path resolution issues)
+    if result.ndim == 1:
+        result = result.reshape(1, -1)
+    with open(out_path, 'w') as f:
+        for row in result:
+            f.write('\t'.join(f'{val:.8f}' for val in row) + '\n')
+    logger.info("Connectivity contrast matrix saved to %s", out_path)
 
 
 # ----------------------------------------------------------------------------

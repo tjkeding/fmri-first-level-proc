@@ -7,8 +7,8 @@
 # compatible with each script's run() function.
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.0
-# Last updated: 02/17/26
+# Version: 2.1
+# Last updated: 03/02/26
 # ============================================================================
 
 import os
@@ -259,18 +259,21 @@ def validate_config(raw_config, logger):
                 logger.error("[%s] Cannot create out_dir '%s': %s", label, out_dir, e)
                 sys.exit(1)
 
-        # Contrasts validation (task_act only) — functions: null = disabled
+        # Contrasts validation (task_act and task_conn) — functions: null = disabled
         if "contrasts" in block:
-            contrasts = block["contrasts"]
-            funcs = contrasts.get("functions")
-            labels = contrasts.get("labels")
-            if funcs is not None and labels is not None:
-                if len(funcs) != len(labels):
-                    logger.error("[%s] contrasts.functions and contrasts.labels must be the same length.", label)
+            if atype not in ("task_act", "task_conn"):
+                logger.warning("[%s] contrasts block is only supported for task_act and task_conn; ignoring.", label)
+            else:
+                contrasts = block["contrasts"]
+                funcs = contrasts.get("functions")
+                labels = contrasts.get("labels")
+                if funcs is not None and labels is not None:
+                    if len(funcs) != len(labels):
+                        logger.error("[%s] contrasts.functions and contrasts.labels must be the same length.", label)
+                        sys.exit(1)
+                elif funcs is not None and labels is None:
+                    logger.error("[%s] contrasts.functions provided but contrasts.labels is missing.", label)
                     sys.exit(1)
-            elif funcs is not None and labels is None:
-                logger.error("[%s] contrasts.functions provided but contrasts.labels is missing.", label)
-                sys.exit(1)
 
         # HRF model validation (task_act and task_conn only)
         if atype in ("task_act", "task_conn"):
@@ -477,6 +480,20 @@ def build_namespace(merged_block, logger):
         ns.WM_path = paths.get("WM_path", None)
         ns.include_motion_derivs = bool(merged_block.get("include_motion_derivs", False))
         ns.use_tissue_derivs = bool(merged_block.get("use_tissue_derivs", False))
+
+        # Contrasts — functions: null = disabled
+        if contrasts is not None:
+            funcs = contrasts.get("functions")
+            labels = contrasts.get("labels")
+            if funcs is not None and labels is not None:
+                ns.contrast_functions = funcs
+                ns.contrast_labels = labels
+            else:
+                ns.contrast_functions = None
+                ns.contrast_labels = None
+        else:
+            ns.contrast_functions = None
+            ns.contrast_labels = None
 
         # Extraction
         if extraction is not None:

@@ -9,8 +9,8 @@
 # 5. (optional) Runs functional connectivity analysis for available beta series with AFNI's 3dNetCorr
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.0
-# Last updated: 02/17/26
+# Version: 2.1
+# Last updated: 03/02/26
 # ============================================================================
 '''
 REQUIREMENTS:
@@ -113,6 +113,10 @@ from .first_level_utils import (
     check_trial_survival,
     write_qc_summary,
     compute_dof,
+    valid_contrast_functions,
+    sanitize_filename_label,
+    build_conn_output_path,
+    compute_matrix_contrast,
     validate_extract_options,
     validate_connectivity_options,
     HRF_DM_MODELS,
@@ -333,6 +337,99 @@ def gen_conn(bseries_info, args, logger):
                 logger=logger,
             )
 
+def gen_conn_contrasts(bseries_info, parsed_contrasts, contrast_labels, args, logger):
+    """Generate connectivity contrasts from condition-level connectivity outputs.
+
+    For each contrast, validates that all referenced conditions have connectivity
+    output files on disk, then computes the weighted linear combination for
+    parcellated (matrix) and/or seed-to-voxel (NIfTI) connectivity outputs.
+
+    Parameters
+    ----------
+    bseries_info : dict
+        Dictionary with 'CONDITION' and 'PATH' lists from gen_beta_series.
+    parsed_contrasts : list of dict
+        Output of valid_contrast_functions — list of {'COEFS': [...], 'CONDS': [...]}.
+    contrast_labels : list of str
+        User-specified labels for each contrast.
+    args : argparse.Namespace
+        Pipeline arguments (must include calc_conn, conn_out_file_pre, fishZ, pcorr, out_dir).
+    logger : logging.Logger
+    """
+    available_conds = set(bseries_info['CONDITION'])
+
+    for ci, (contrast, label) in enumerate(zip(parsed_contrasts, contrast_labels)):
+        safe_label = sanitize_filename_label(label)
+        coefs = contrast['COEFS']
+        conds = contrast['CONDS']
+
+        # Validate all referenced conditions have connectivity output
+        missing = []
+        cond_conn_paths = []
+        for cond in conds:
+            if cond not in available_conds:
+                missing.append(cond)
+                cond_conn_paths.append(None)
+                continue
+            cond_path = build_conn_output_path(
+                args.out_dir, args.conn_out_file_pre, cond,
+                args.fishZ, args.pcorr, args.calc_conn)
+            if not os.path.exists(cond_path):
+                missing.append(cond)
+            cond_conn_paths.append(cond_path)
+
+        if missing:
+            logger.error("Connectivity contrast '%s': missing connectivity output for "
+                         "conditions %s. Skipping this contrast.", label, missing)
+            continue
+
+        # Build contrast output path
+        contrast_conn_path = build_conn_output_path(
+            args.out_dir, args.conn_out_file_pre, safe_label,
+            args.fishZ, args.pcorr, args.calc_conn)
+
+        if os.path.exists(contrast_conn_path):
+            logger.info("Connectivity contrast '%s' already exists at %s.", label, contrast_conn_path)
+            continue
+
+        if args.calc_conn == "parcellated":
+            compute_matrix_contrast(cond_conn_paths, coefs, contrast_conn_path, logger)
+            logger.info("Parcellated connectivity contrast '%s' saved to %s.", label, contrast_conn_path)
+        else:
+            # seed_to_voxel: use 3dcalc with single-letter identifiers
+            if len(conds) > 26:
+                logger.error("Connectivity contrast '%s' references %d conditions, "
+                             "but 3dcalc supports at most 26 single-letter identifiers.",
+                             label, len(conds))
+                continue
+
+            letters = [chr(ord('a') + i) for i in range(len(conds))]
+
+            calc_cmd = ["3dcalc"]
+            for letter, path in zip(letters, cond_conn_paths):
+                calc_cmd.extend([f"-{letter}", path])
+
+            # Build expression: coef_a*a+coef_b*b+...
+            expr_parts = []
+            for coef_str, letter in zip(coefs, letters):
+                expr_parts.append(f"{coef_str}*{letter}")
+            # Join with implicit sign handling (coefs already contain signs)
+            expr = expr_parts[0]
+            for part in expr_parts[1:]:
+                if part[0] in ('+', '-'):
+                    expr += part
+                else:
+                    expr += '+' + part
+
+            calc_cmd.extend(["-expr", expr, "-prefix", contrast_conn_path])
+            run_afni_command(calc_cmd, description=f"3dcalc connectivity contrast {label}", logger=logger)
+
+            if os.path.exists(contrast_conn_path):
+                logger.info("Seed-to-voxel connectivity contrast '%s' saved to %s.", label, contrast_conn_path)
+            else:
+                logger.error("Failed to create seed-to-voxel connectivity contrast '%s'.", label)
+
+
 def run(args, logger):
     """Validate args and execute pipeline. Works from CLI or config runner."""
     args = copy.copy(args)
@@ -427,6 +524,18 @@ def run(args, logger):
     if args.calc_conn is not None:
         gen_conn(bseries_out, args, logger)
 
+    # Connectivity contrasts
+    if args.contrast_functions is not None and args.contrast_labels is not None:
+        parsed_contrasts = valid_contrast_functions(
+            args.contrast_functions, args.contrast_labels,
+            args.cond_beta_labels, logger=logger)
+        if args.calc_conn is not None:
+            gen_conn_contrasts(bseries_out, parsed_contrasts, args.contrast_labels, args, logger)
+            qc_data["contrast_labels"] = args.contrast_labels
+        else:
+            logger.warning("Contrasts specified but calc_conn is disabled — "
+                           "connectivity contrasts require connectivity to be enabled. Skipping.")
+
     # Write QC summary
     write_qc_summary(args.out_dir, args.out_file_pre, qc_data, logger)
 
@@ -469,6 +578,8 @@ def main():
     parser.add_argument("--calc_conn", type=valid_conn_type, required=False)
     parser.add_argument("--conn_out_file_pre", type=str, required=False)
     parser.add_argument("--template_path", type=file_path_exists, required=False)
+    parser.add_argument("--contrast_functions", type=valid_string_list, required=False)
+    parser.add_argument("--contrast_labels", type=valid_string_list, required=False)
     parser.add_argument("--force_diff_atlas", action='store_true', required=False)
     parser.add_argument("--pcorr", action='store_true', required=False)
     parser.add_argument("--fishZ", action='store_true', required=False)

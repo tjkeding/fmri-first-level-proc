@@ -7,8 +7,8 @@
 # 3. (optional) Extract parcel-level/ROI activation with a provided template with AFNI's 3dROIstats
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.0
-# Last updated: 02/17/26
+# Version: 2.1
+# Last updated: 03/02/26
 # ============================================================================
 '''
 REQUIREMENTS:
@@ -79,7 +79,6 @@ import sys
 import subprocess
 import argparse
 import time
-import re
 
 import numpy as np
 import pandas as pd
@@ -109,6 +108,7 @@ from .first_level_utils import (
     check_trial_survival,
     write_qc_summary,
     compute_dof,
+    valid_contrast_functions,
     CENSOR_WARN_THRESHOLD,
     CENSOR_HIGH_THRESHOLD,
     HRF_DM_MODELS,
@@ -116,84 +116,6 @@ from .first_level_utils import (
     HRF_DURATION_MODELS,
     VALID_HRF_MODELS,
 )
-
-def valid_contrast_functions(contrast_list, contrast_labs_list, cond_list, logger=None):
-    """Parse and validate linear contrast equations.
-
-    Accepted format: ``coef*COND[+-coef*COND...]``
-    Examples: ``1*stimA-1*stimB``, ``-1*A+0.5*B+0.5*C``, ``+1*X-1*Y``
-
-    Returns a list of dicts, one per contrast, each with keys 'COEFS' (list of
-    str coefficients with signs) and 'CONDS' (list of condition names).
-    """
-
-    # Check that contrast_list and contrast_labs_list are same size
-    if len(contrast_list) != len(contrast_labs_list):
-        logger.error("Every contrast in --contrast_functions must have a label in --contrast_labels")
-        sys.exit(1)
-
-    # Regex for a single term: optional sign, a numeric coefficient, *, condition name
-    _TERM_RE = re.compile(r'([+-]?\d*\.?\d+)\*(\w+)')
-    # Regex that matches the entire valid contrast string (one or more terms)
-    _FULL_RE = re.compile(r'^([+-]?\d*\.?\d+\*\w+)([+-]\d*\.?\d+\*\w+)*$')
-
-    out = []
-    for contrast in contrast_list:
-        raw = contrast
-        contrast = contrast.replace(" ", "")
-
-        if not contrast:
-            logger.error("Empty contrast equation (original: '%s').", raw)
-            sys.exit(1)
-
-        # Validate the entire string matches the expected grammar
-        if not _FULL_RE.match(contrast):
-            # Provide a targeted diagnostic
-            if '*' not in contrast:
-                logger.error("Contrast '%s' is missing coefficients. "
-                             "Every condition must have an explicit coefficient "
-                             "(e.g. '1*stimA-1*stimB', not 'stimA-stimB').", raw)
-            elif re.search(r'[*/]{2,}', contrast):
-                logger.error("Contrast '%s' has consecutive operators.", raw)
-            elif contrast.endswith(('+', '-', '*')):
-                logger.error("Contrast '%s' has a trailing operator.", raw)
-            elif re.search(r'[^+\-\d.*\w]', contrast):
-                bad = re.findall(r'[^+\-\d.*\w]', contrast)
-                logger.error("Contrast '%s' contains invalid characters: %s", raw, bad)
-            else:
-                logger.error("Contrast '%s' could not be parsed. "
-                             "Expected format: coef*COND[+-coef*COND...] "
-                             "(e.g. '1*stimA-1*stimB').", raw)
-            sys.exit(1)
-
-        matches = _TERM_RE.findall(contrast)
-
-        coefs = [m[0] for m in matches]
-        conds = [m[1] for m in matches]
-
-        # Check all contrast conditions exist in cond_list
-        for item in conds:
-            if item not in cond_list:
-                logger.error("Contrast '%s' references condition '%s' which is not in --cond_labels (%s).",
-                             raw, item, cond_list)
-                sys.exit(1)
-
-        # Validate coefficients are valid floats
-        for item in coefs:
-            try:
-                float(item)
-            except ValueError:
-                logger.error("Contrast '%s' has invalid coefficient '%s'.", raw, item)
-                sys.exit(1)
-
-        # Warn about zero coefficients (technically valid but likely a mistake)
-        for coef, cond in zip(coefs, conds):
-            if float(coef) == 0.0:
-                logger.warning("Contrast '%s': coefficient for '%s' is 0 — "
-                               "this condition will have no effect.", raw, cond)
-
-        out.append({'COEFS': coefs, 'CONDS': conds})
-    return out
 
 def valid_extract_labels(cond_labels, contrast_labels, extract_labels, logger=None):
     combined = list(cond_labels) + (contrast_labels if contrast_labels else [])

@@ -169,8 +169,38 @@ Same as `task_act`: `CSF_path`, `WM_path`.
 |---|---|---|---|
 | `custom_hrf` | str or null | `null` | Custom AFNI HRF model string. Required when `hrf_model: custom`. |
 | `use_tissue_derivs` | bool | `false` | `true` = include first temporal derivatives of tissue signals (CSF, WM) as additional nuisance regressors. Only computed for tissue paths that are not null. |
+| `contrasts` | dict or null | `null` | Connectivity contrast specification. See below. |
 | `extraction` | dict or null | `null` | Parcel beta series extraction. See below. |
 | `connectivity` | dict or null | `null` | Functional connectivity computation. See below. |
+
+### Contrasts (Connectivity)
+
+Linear contrasts applied to condition-level connectivity outputs (post-connectivity). These compute weighted linear combinations of condition-specific connectivity matrices (parcellated) or seed-to-voxel maps.
+
+```yaml
+contrasts:
+  functions:          # list of str or null; null = contrasts disabled
+    - "1*stimFear-1*stimNeu"
+    - "1*stimSad-1*stimNeu"
+  labels:             # list of str; must be same length as functions
+    - "Fear-Neutral"
+    - "Sad-Neutral"
+```
+
+- `functions`: list of contrast equations using condition labels from `cond_beta_labels`. Set to `null` to disable.
+- `labels`: human-readable names for each contrast. Same length as `functions`. Labels are sanitized for filesystem safety (spaces/slashes replaced with underscores).
+
+**Requirements:**
+- Connectivity must be enabled (`calc_conn` must not be null). If contrasts are specified without connectivity, a warning is logged and contrasts are skipped.
+- Each condition referenced in a contrast equation must be present in `cond_beta_labels` and must have a valid connectivity output file on disk.
+- If a contrast references a condition with a missing connectivity output, that contrast is skipped with an error log (other contrasts still proceed).
+
+**Implementation details:**
+- **Parcellated:** Contrast matrices are computed via element-wise weighted linear combination of condition matrices (loaded with `numpy.loadtxt`, tab-delimited). All matrices must have identical dimensions.
+- **Seed-to-voxel:** Contrasts are computed via AFNI `3dcalc` with single-letter identifiers (a-z), supporting up to 26 unique conditions per contrast expression.
+
+**Output naming:** Same convention as condition-level connectivity outputs, with the sanitized contrast label replacing the condition name. For example, with `conn_out_file_pre: "subj001_Shen368"`, `fishZ: true`, `calc_conn: "parcellated"`:
+- `subj001_Shen368_Fear-Neutral_fishZ_mat.txt`
 
 ### Extraction
 
@@ -389,6 +419,7 @@ Schema varies by analysis type:
 | `dof` | int or null | Estimated degrees of freedom |
 | `per_condition_trial_counts` | dict | Total trial count per condition |
 | `per_condition_surviving_trials` | dict | Trials surviving censoring per condition |
+| `contrast_labels` | list of str or absent | (task_conn only) Labels of connectivity contrasts computed, if any |
 
 **rest_conn additionally includes:**
 | Key | Type | Description |
@@ -413,6 +444,7 @@ Schema varies by analysis type:
 - `{out_file_pre}_qc_summary.json` — QC summary
 - Extracted parcel beta series (if `extraction` enabled): CSV files
 - Connectivity matrices (if `connectivity` enabled): tab-delimited text files
+- Connectivity contrast outputs (if `contrasts` enabled with connectivity): contrast-level matrices (parcellated) or NIfTI maps (seed-to-voxel), using same naming convention as condition outputs with the sanitized contrast label
 
 ### Resting-State Connectivity (`rest_conn`)
 

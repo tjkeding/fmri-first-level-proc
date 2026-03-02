@@ -107,6 +107,32 @@ For rest_conn with GS enabled, GS derivatives are also included.
 - `seed_to_voxel` or `parcellated`
 - Optional partial correlation (`pcorr`) and Fisher Z-transform (`fishZ`)
 
+### Connectivity Contrasts (`task_conn`)
+
+Linear contrasts can be applied to condition-level connectivity outputs (matrices or seed-to-voxel maps). This enables direct comparison of connectivity patterns across task conditions (e.g., Fear connectivity minus Neutral connectivity).
+
+**Requirements:**
+- Connectivity must be enabled (`calc_conn` must not be null)
+- Contrast conditions must reference conditions in `cond_beta_labels`
+- Each referenced condition must have a valid connectivity output file on disk
+
+**Configuration:**
+```yaml
+contrasts:
+  functions:
+    - "1*stimFear-1*stimNeu"
+    - "1*stimSad-1*stimNeu"
+  labels:
+    - "Fear-Neutral"
+    - "Sad-Neutral"
+```
+
+**Output naming:** Connectivity contrast outputs use the same naming convention as condition-level outputs, with the contrast label replacing the condition name (sanitized for filesystem safety). For example, with `conn_out_file_pre: "subj001_Shen368"` and `fishZ: true`:
+- Parcellated: `subj001_Shen368_Fear-Neutral_fishZ_mat.txt`
+- Seed-to-voxel: `subj001_Shen368_Fear-Neutral_fishZ.nii.gz`
+
+**Behavior:** If a contrast references a condition whose connectivity output is missing, that contrast is skipped with an error log (other contrasts still proceed). If contrasts are specified but `calc_conn` is null, a warning is logged and contrasts are skipped.
+
 ## Output Files
 
 Each analysis writes outputs to `out_dir` using the `out_file_pre` prefix. All analysis types produce a QC summary JSON (`{out_file_pre}_qc_summary.json`).
@@ -126,6 +152,7 @@ Each analysis writes outputs to `out_dir` using the `out_file_pre` prefix. All a
 - `{out_file_pre}_concat_motion_prepared.txt` — validated/truncated motion regressors
 - Extracted parcel beta series (if `extraction` enabled): CSV files
 - Connectivity matrices (if `connectivity` enabled): tab-delimited text files (correlation/partial correlation, optionally Fisher Z-transformed)
+- Connectivity contrast outputs (if `contrasts` enabled with connectivity): contrast-level matrices or NIfTI maps following the same naming convention as condition outputs
 
 ### Resting-State Connectivity (`rest_conn`)
 
