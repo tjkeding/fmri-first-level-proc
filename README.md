@@ -1,4 +1,4 @@
-# fmri_first_level_proc
+# fmri-first-level-proc
 
 A YAML-driven Python framework for first-level fMRI analysis (Task Activation, Task Connectivity, and Resting-State Connectivity) built on AFNI.
 
@@ -21,7 +21,7 @@ A YAML-driven Python framework for first-level fMRI analysis (Task Activation, T
 ## Installation
 
 ```bash
-pip install git+https://github.com/tjkeding/fmri_first_level_proc.git
+pip install git+https://github.com/tjkeding/fmri-first-level-proc.git
 ```
 
 ## Quick Start

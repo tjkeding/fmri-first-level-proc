@@ -132,7 +132,7 @@ def gen_residual_ts(args, logger):
             prepared_motion.append(prepared)
 
             # Per-run DOF check
-            n_regressors = use_cols + 3  # polort 2 → 3 polynomial regressors
+            n_regressors = use_cols + 3  # polort 2 -> 3 polynomial regressors
             n_regressors += 2  # CSF + WM (always present)
             if args.GS_paths is not None:
                 n_regressors += 1
@@ -140,13 +140,17 @@ def gen_residual_ts(args, logger):
                 n_regressors += 2  # CSF_deriv + WM_deriv
                 if args.GS_paths is not None:
                     n_regressors += 1  # GS_deriv
-            run_dof = compute_dof(censor_path, n_regressors, logger)
+            run_dof = compute_dof(censor_path, n_regressors, logger, exit_on_error=False)
             per_run_dof.append(run_dof)
 
         completed_runs = []
 
         # Iterate individual resting-state runs
         for i, run_scan in enumerate(args.scan_paths):
+
+            if per_run_dof[i] is not None and per_run_dof[i] < 1:
+                logger.warning("Run %d has insufficient degrees of freedom (DOF=%d). Skipping this run.", i+1, per_run_dof[i])
+                continue
 
             run_out = os.path.join(args.out_dir, f"{args.out_file_pre}_run{i+1}_residual_dtseries.nii.gz")
 
@@ -177,15 +181,23 @@ def gen_residual_ts(args, logger):
                 tproj_command.extend(["-prefix", run_out])
 
                 # Run command and check output
-                run_afni_command(tproj_command, description=f"3dTproject run{i+1}", logger=logger)
+                try:
+                    run_afni_command(tproj_command, description=f"3dTproject run{i+1}", logger=logger)
+                except Exception as e:
+                    logger.error("3dTproject failed for run %d: %s", i+1, e)
+                    continue
+
                 if os.path.exists(run_out):
                     logger.info("Successfully created residual dtseries for %s_run%d.", args.out_file_pre, i+1)
                     completed_runs.append(run_out)
                 else:
                     logger.error("Failed to create residual dtseries for %s_run%d.", args.out_file_pre, i+1)
-                    sys.exit(1)
             else:
                 completed_runs.append(run_out)
+
+        if not completed_runs:
+            logger.error("No runs were successfully processed for %s. Aborting.", args.out_file_pre)
+            sys.exit(1)
 
         # Concatenate residual time series runs
         cat_command = ["3dTcat", "-TR", str(args.tr), "-prefix", concat_path] + completed_runs

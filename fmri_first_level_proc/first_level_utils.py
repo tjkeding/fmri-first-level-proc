@@ -1081,7 +1081,7 @@ def write_qc_summary(out_dir, out_file_pre, qc_data, logger):
         logger.warning("Could not write QC summary to %s: %s", qc_path, e)
 
 
-def compute_dof(censor_path, n_regressors, logger):
+def compute_dof(censor_path, n_regressors, logger, exit_on_error=True):
     """Compute degrees of freedom from censor file and regressor count.
 
     Parameters
@@ -1111,7 +1111,8 @@ def compute_dof(censor_path, n_regressors, logger):
                      "Too many TRs censored and/or too many regressors for AFNI "
                      "to produce valid output. Consider relaxing the FD threshold "
                      "or reducing the model complexity.", dof)
-        sys.exit(1)
+        if exit_on_error:
+            sys.exit(1)
     return dof
 
 

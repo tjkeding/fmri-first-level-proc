@@ -1,6 +1,6 @@
 # Input Specification
 
-Complete reference for all inputs accepted by `fmri_first_level_proc`. This document covers the YAML config structure, every parameter and its allowed values, and the exact format requirements for each input file.
+Complete reference for all inputs accepted by `fmri-first-level-proc`. This document covers the YAML config structure, every parameter and its allowed values, and the exact format requirements for each input file.
 
 ---
 

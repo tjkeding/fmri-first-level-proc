@@ -1,5 +1,5 @@
 # ============================================================================
-# Conda environment for fmri_first_level_proc
+# Conda environment for fmri-first-level-proc
 # ============================================================================
 # Create:  conda env create -f environment.yaml
 # Activate: conda activate fmri_first_level
