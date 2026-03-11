@@ -5,9 +5,32 @@
 # Common functions used across task_act, task_conn, and rest_conn pipelines.
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.1
-# Last updated: 03/02/26
+# Version: 2.2
+# Last updated: 03/11/26
 # ============================================================================
+"""
+Shared utility functions for the fmri_first_level_proc package.
+
+This module provides functions used by all three analysis pipelines
+(task_act_first_level, task_conn_first_level, rest_conn_first_level):
+
+- Argument validation and type helpers (argparse types)
+- Logging setup
+- Motion file preparation and censor file generation
+- Notch filtering of motion parameters
+- Trial survival QC
+- HRF model string construction and validation
+- Stimulus timing file I/O
+- AFNI command execution wrapper
+- NIfTI template validation and resampling
+- ROI statistics extraction via 3dROIstats
+- QC summary output
+- Degrees of freedom computation
+- Linear contrast parsing and validation
+- Connectivity output path construction
+- Connectivity matrix contrast computation
+- Seed-to-voxel and parcellated connectivity via 3dNetCorr
+"""
 
 import json
 import os
@@ -664,11 +687,11 @@ def notch_filter_motion(motion_path, tr, stopband, out_dir, out_prefix, label, l
 
     out_path = os.path.join(out_dir, f"{out_prefix}_{label}_notch_motion.1D")
 
-    # 3dTproject on 1D file: use \' (AFNI transpose) so rows=timepoints, cols=params
+    # 3dTproject on .1D file: rows=timepoints, cols=motion params (no transpose needed)
     cmd = ["3dTproject",
            "-polort", "-1",
            "-dt", str(tr),
-           "-input", f"{motion_6col}'",
+           "-input", f"{motion_6col}",
            "-stopband", str(stopband[0]), str(stopband[1]),
            "-prefix", out_path]
 
@@ -719,13 +742,37 @@ def compute_tissue_derivative(tissue_path, out_dir, out_prefix, tissue_label, lo
     logger.info("Created tissue derivative: %s", deriv_path)
     return deriv_path
 
-def build_decon_base_command(scan_path, censor_path, motion_path,CSF_path=None, WM_path=None, CSF_deriv_path=None, WM_deriv_path=None, tr=None):
-
+def build_decon_base_command(scan_path, censor_path, motion_path, CSF_path=None, WM_path=None, CSF_deriv_path=None, WM_deriv_path=None, tr=None):
     """Build base 3dDeconvolve command with standard nuisance regressors.
 
-    Returns list of str containing: -quiet, -input, -polort A, -censor,
-    motion ortvec, optional CSF/WM ortvecs (plus their derivatives),
-    and optional -TR_times.
+    Constructs the invariant portion of the 3dDeconvolve command shared by both
+    task_act (full GLM) and task_conn (design matrix only, -x1D_stop). The caller
+    is responsible for appending stimulus timing and output flags.
+
+    Parameters
+    ----------
+    scan_path : str
+        Path to the input NIfTI time series.
+    censor_path : str
+        Path to the binary censor file.
+    motion_path : str
+        Path to the prepared motion regressor file.
+    CSF_path : str or None, optional
+        Path to the CSF mean signal file.
+    WM_path : str or None, optional
+        Path to the WM mean signal file.
+    CSF_deriv_path : str or None, optional
+        Path to the first temporal derivative of CSF signal.
+    WM_deriv_path : str or None, optional
+        Path to the first temporal derivative of WM signal.
+    tr : float or None, optional
+        Repetition time in seconds; adds -TR_times if provided.
+
+    Returns
+    -------
+    list of str
+        Partial 3dDeconvolve command: [-quiet, -input, -polort A, -censor,
+        motion -ortvec, optional tissue -ortvec flags, optional -TR_times].
     """
     cmd = ["3dDeconvolve", "-quiet",
            "-input", scan_path,
@@ -1091,11 +1138,17 @@ def compute_dof(censor_path, n_regressors, logger, exit_on_error=True):
     n_regressors : int
         Total number of regressors in the model.
     logger : logging.Logger
+    exit_on_error : bool, optional
+        If True (default), calls sys.exit(1) when DOF < 1.
+        If False, logs the error and returns the negative DOF value (used for
+        per-run DOF checks in rest_conn, where individual runs may be skipped
+        rather than aborting the entire pipeline).
 
     Returns
     -------
-    int
-        Degrees of freedom (n_uncensored - n_regressors).
+    int or None
+        Degrees of freedom (n_uncensored - n_regressors), or None if the
+        censor file could not be read.
     """
     try:
         censor_data = np.loadtxt(censor_path)
@@ -1422,8 +1475,25 @@ def seed_to_voxel_conn(inset_path, out_dir, conn_out_file_pre, template_path,fis
         _log.warning("Could not create functional connectivity for seed %s.", template_path)
 
 def format_netcorr_mat(netcorr_file, fishZ, pcorr, curr_out_path):
-    """
-    Parse a 3dNetCorr .netcc output file and save the desired matrix as tab-delimited text.
+    """Parse a 3dNetCorr .netcc output file and save the desired matrix as tab-delimited text.
+
+    The .netcc file contains multiple labeled matrix sections. The section to extract
+    depends on the fishZ and pcorr flags:
+    - fishZ=False, pcorr=False  → CC (Pearson correlation)
+    - fishZ=False, pcorr=True   → PC (partial correlation)
+    - fishZ=True,  pcorr=False  → FZ (Fisher Z-transformed correlation)
+    - fishZ=True,  pcorr=True   → PCB (Fisher Z-transformed partial correlation)
+
+    Parameters
+    ----------
+    netcorr_file : str
+        Path to the 3dNetCorr .netcc output file.
+    fishZ : bool
+        Whether Fisher Z-transform was requested.
+    pcorr : bool
+        Whether partial correlation was requested.
+    curr_out_path : str
+        Destination path for the tab-delimited matrix text file.
     """
     if not fishZ and not pcorr:
         entry_to_check = "CC"

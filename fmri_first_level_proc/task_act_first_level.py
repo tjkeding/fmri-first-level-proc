@@ -7,8 +7,8 @@
 # 3. (optional) Extract parcel-level/ROI activation with a provided template with AFNI's 3dROIstats
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.1
-# Last updated: 03/02/26
+# Version: 2.2
+# Last updated: 03/11/26
 # ============================================================================
 '''
 REQUIREMENTS:
@@ -118,6 +118,18 @@ from .first_level_utils import (
 )
 
 def valid_extract_labels(cond_labels, contrast_labels, extract_labels, logger=None):
+    """Validate that all extract_labels exist in cond_labels or contrast_labels.
+
+    Parameters
+    ----------
+    cond_labels : list of str
+        Task condition labels.
+    contrast_labels : list of str or None
+        Contrast labels (may be None if no contrasts are defined).
+    extract_labels : list of str
+        Labels to extract; each must match a condition or contrast label.
+    logger : logging.Logger, optional
+    """
     combined = list(cond_labels) + (contrast_labels if contrast_labels else [])
     for valid in extract_labels:
         if valid not in combined:
@@ -125,7 +137,24 @@ def valid_extract_labels(cond_labels, contrast_labels, extract_labels, logger=No
             sys.exit(1)
 
 def get_stim_data(args, logger):
+    """Read and write per-condition AFNI onset files for the task activation pipeline.
 
+    Reads and validates the timing CSV, then writes AFNI-format onset files for
+    each condition in cond_labels (used as -stim_times inputs to 3dDeconvolve).
+    Conditions not in cond_labels are silently ignored.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Must include: task_timing_path, cond_labels, out_dir, out_file_pre,
+        hrf_model, custom_hrf.
+    logger : logging.Logger
+
+    Returns
+    -------
+    pd.DataFrame
+        Sorted timing data with CONDITION, ONSET, DURATION columns.
+    """
     # Read, validate, and sort stim timing data
     sorted_df = read_and_validate_stim_data(args.task_timing_path, args.cond_labels, logger=logger)
 
@@ -139,7 +168,24 @@ def get_stim_data(args, logger):
     return sorted_df
 
 def run_first_level(stim_data, args, logger):
+    """Execute the 3dDeconvolve activation first-level regression.
 
+    Builds the full 3dDeconvolve command including nuisance regressors
+    (motion, optional CSF/WM/derivatives), per-condition HRF-convolved
+    stimulus timing, optional linear contrasts (GLTs), and statistics output
+    flags (-fout, -rout, -tout). Writes the bucket stats and residuals NIfTIs.
+    Skips if the output bucket stats file already exists.
+
+    Parameters
+    ----------
+    stim_data : pd.DataFrame
+        Timing data from get_stim_data.
+    args : argparse.Namespace
+        Must include: scan_path, censor_path, motion_path, CSF_path, WM_path,
+        out_dir, out_file_pre, cond_labels, hrf_model, custom_hrf,
+        contrast_functions, contrast_labels, num_cores, tr.
+    logger : logging.Logger
+    """
     # Check if outputs exists
     if not os.path.exists(f"{args.out_dir}/{args.out_file_pre}_concat_bucket_stats.nii.gz"):
 
@@ -267,7 +313,22 @@ def _get_subbrik_stat_aux(bucket_path, subbrik_index, logger=None):
 
 
 def extract_effects(args, logger):
+    """Extract condition- or contrast-specific statistical maps from the bucket dataset.
 
+    For each label in extract_labels, locates the corresponding sub-brick in the
+    3dDeconvolve bucket stats NIfTI. Supports T-, F-, and Z-statistics; Z-stats are
+    obtained via T-to-Z conversion using 3dcalc's fitt_t2z() with DOF retrieved from
+    BRICK_STATAUX. Outputs either whole-brain NIfTIs (template_path='WB') or
+    parcel-averaged CSVs when a template is provided. Optionally extracts residuals
+    as a parcel-averaged CSV when extract_resids is enabled.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Must include: out_dir, out_file_pre, extract_labels, extract_stat,
+        extract_out_file_pre, template_path, average_type, extract_resids.
+    logger : logging.Logger
+    """
     bucket_path = f"{args.out_dir}/{args.out_file_pre}_concat_bucket_stats.nii.gz"
 
     # Get subbrik info from bucket stats dataset

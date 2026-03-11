@@ -8,8 +8,8 @@
 # 4. (optional) Runs functional connectivity analysis with AFNI's 3dNetCorr
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.1
-# Last updated: 03/02/26
+# Version: 2.2
+# Last updated: 03/11/26
 # ============================================================================
 '''
 REQUIREMENTS:
@@ -104,7 +104,26 @@ from .first_level_utils import (
 )
 
 def gen_residual_ts(args, logger):
+    """Generate per-run residual dense time series and concatenate across runs.
 
+    For each run: optionally notch-filters motion parameters, generates an FD-based
+    censor file, runs a DOF check (warns and skips runs with DOF < 1), then calls
+    3dTproject to regress out motion, tissue signals, and optional bandpass filtering.
+    Surviving runs are concatenated via 3dTcat.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Pipeline arguments (scan_paths, motion_paths, CSF_paths, WM_paths,
+        GS_paths, out_dir, out_file_pre, tr, fd_threshold, censor_prev_tr,
+        notch_filter_band, bandpass, use_tissue_derivs, keep_run_res_dtseries).
+    logger : logging.Logger
+
+    Returns
+    -------
+    list of int or None
+        Per-run DOF estimates (None for runs where DOF could not be computed).
+    """
     # Check if concatenated residual dtseries exists
     concat_path = os.path.join(args.out_dir, f"{args.out_file_pre}_concat_residual_dtseries.nii.gz")
     per_run_dof = []
@@ -223,7 +242,19 @@ def gen_residual_ts(args, logger):
     return per_run_dof
 
 def gen_ptseries(args, logger):
+    """Extract ROI-level residual parcel time series from the concatenated dtseries.
 
+    Uses the concatenated residual dtseries and the provided template to extract
+    mean or median BOLD signal per ROI via 3dROIstats. Output is written as a CSV.
+    Skips if the output file already exists.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Must include: out_dir, out_file_pre, extract_out_file_pre, template_path,
+        average_type.
+    logger : logging.Logger
+    """
     # Check if output already exists
     if not os.path.exists(f"{args.out_dir}/{args.extract_out_file_pre}_residual_ptseries.csv"):
 
@@ -241,7 +272,19 @@ def gen_ptseries(args, logger):
         logger.info("%s/%s_residual_ptseries.csv already exists.", args.out_dir, args.extract_out_file_pre)
 
 def gen_conn(args, logger):
+    """Compute functional connectivity from the concatenated residual dtseries.
 
+    Dispatches to either parcellated_conn (ROI-to-ROI matrix via 3dNetCorr) or
+    seed_to_voxel_conn (whole-brain voxelwise map via 3dNetCorr) based on
+    args.calc_conn. For resting-state, no condition label is used.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Must include: out_dir, out_file_pre, calc_conn, conn_out_file_pre,
+        template_path, fishZ, pcorr.
+    logger : logging.Logger
+    """
     inset_path = os.path.join(args.out_dir, f"{args.out_file_pre}_concat_residual_dtseries.nii.gz")
 
     # Run connectivity analyses based on the specified flavor (no condition — resting-state)

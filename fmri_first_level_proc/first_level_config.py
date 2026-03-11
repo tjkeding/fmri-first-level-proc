@@ -7,9 +7,38 @@
 # compatible with each script's run() function.
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.1
-# Last updated: 03/02/26
+# Version: 2.2
+# Last updated: 03/11/26
 # ============================================================================
+"""
+YAML configuration loader, validator, and namespace builder for fmri_first_level_proc.
+
+Public API
+----------
+load_and_validate(config_path, logger)
+    Full pipeline: load YAML → validate → merge global defaults → build Namespace objects.
+    Returns a list of (analysis_type, argparse.Namespace, analysis_name) tuples suitable
+    for direct dispatch to each pipeline's run() function.
+
+Config Schema Overview
+----------------------
+global:
+    tr           : float (required) — repetition time in seconds
+    num_cores    : int — CPU cores for parallel processing
+    template_path: str — shared ROI template for all analyses
+    force_diff_atlas: bool — allow atlas space mismatches
+
+analyses:
+    - name        : str (optional label)
+      type        : 'task_act' | 'task_conn' | 'rest_conn'
+      out_dir     : str
+      out_file_pre: str
+      paths       : dict of required/optional file paths (type-dependent)
+      ... (type-specific keys; see INPUT_SPECIFICATION.md for full schema)
+
+Validation enforces: required keys, file existence, enum ranges, bandpass bounds,
+HRF model compatibility, contrast length parity, and unique (out_dir, out_file_pre) pairs.
+"""
 
 import os
 import sys

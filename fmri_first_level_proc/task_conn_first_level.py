@@ -9,8 +9,8 @@
 # 5. (optional) Runs functional connectivity analysis for available beta series with AFNI's 3dNetCorr
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.1
-# Last updated: 03/02/26
+# Version: 2.2
+# Last updated: 03/11/26
 # ============================================================================
 '''
 REQUIREMENTS:
@@ -126,7 +126,24 @@ from .first_level_utils import (
 )
 
 def get_stim_data(args, logger):
+    """Read and write stimulus timing files for the task connectivity pipeline.
 
+    Reads and validates the timing CSV, then creates AFNI-format onset files for
+    conditions NOT in cond_beta_labels (to be controlled for in 3dDeconvolve) and
+    a combined onset file for all beta conditions (used with -stim_times_IM in 3dLSS).
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Must include: task_timing_path, cond_beta_labels, out_dir, out_file_pre,
+        hrf_model, custom_hrf.
+    logger : logging.Logger
+
+    Returns
+    -------
+    pd.DataFrame
+        Sorted timing data with CONDITION, ONSET, DURATION columns.
+    """
     # Read, validate, and sort stim timing data
     sorted_df = read_and_validate_stim_data(args.task_timing_path, args.cond_beta_labels, logger=logger)
 
@@ -158,7 +175,23 @@ def get_stim_data(args, logger):
     return sorted_df
 
 def gen_design_matrix(stim_data, args, logger):
+    """Build the 3dDeconvolve design matrix for LSS beta series estimation.
 
+    Creates nuisance regressors for non-beta conditions and a combined -stim_times_IM
+    regressor for all beta conditions. The matrix is written to disk as an .x1D file
+    using 3dDeconvolve -x1D_stop (no output statistics dataset). Skips if the design
+    matrix file already exists.
+
+    Parameters
+    ----------
+    stim_data : pd.DataFrame
+        Timing data from get_stim_data.
+    args : argparse.Namespace
+        Must include: scan_path, censor_path, motion_path, CSF_path, WM_path,
+        CSF_deriv_path (if use_tissue_derivs), out_dir, out_file_pre, hrf_model,
+        custom_hrf, cond_beta_labels, num_cores, tr.
+    logger : logging.Logger
+    """
     # Check if output already exists
     if not os.path.exists(f"{args.out_dir}/{args.out_file_pre}_concat_bseries_dmat.x1D"):
 
@@ -219,7 +252,26 @@ def gen_design_matrix(stim_data, args, logger):
     clean_deconvolve_err(args.out_dir)
 
 def gen_beta_series(stim_data, args, logger):
+    """Generate the full-task LSS beta series and condition-specific beta volumes.
 
+    Runs 3dLSS on the design matrix to produce the full-task beta series NIfTI
+    (one sub-brick per trial), then extracts condition-specific sub-bricks via 3dcalc
+    for each condition in cond_beta_labels.
+
+    Parameters
+    ----------
+    stim_data : pd.DataFrame
+        Timing data from get_stim_data.
+    args : argparse.Namespace
+        Must include: out_dir, out_file_pre, scan_path, cond_beta_labels.
+    logger : logging.Logger
+
+    Returns
+    -------
+    dict
+        {'CONDITION': list of str, 'PATH': list of str} with successfully created
+        condition-specific beta series.
+    """
     # Check if full-task beta series already exists
     if not os.path.exists(f"{args.out_dir}/{args.out_file_pre}_concat_LSS.nii.gz"):
 
@@ -289,7 +341,20 @@ def gen_beta_series(stim_data, args, logger):
     return bseries_out
 
 def gen_pbseries(bseries_info, args, logger):
+    """Extract ROI-level parcel beta series for each condition.
 
+    For each condition with a beta series NIfTI, calls extract_roi_stats to
+    average beta values per ROI/parcel using the provided template, and saves
+    the result as a CSV. Skips conditions where the output already exists.
+
+    Parameters
+    ----------
+    bseries_info : dict
+        {'CONDITION': list of str, 'PATH': list of str} from gen_beta_series.
+    args : argparse.Namespace
+        Must include: out_dir, extract_out_file_pre, template_path, average_type.
+    logger : logging.Logger
+    """
     # Iterate available condition-specific beta series
     for i, cond in enumerate(bseries_info['CONDITION']):
 
@@ -309,7 +374,21 @@ def gen_pbseries(bseries_info, args, logger):
             logger.info("%s/%s_pbseries_%s.csv already exists (skipping).", args.out_dir, args.extract_out_file_pre, cond)
 
 def gen_conn(bseries_info, args, logger):
+    """Compute condition-specific functional connectivity from task beta series.
 
+    Iterates over each condition in bseries_info and dispatches to either
+    parcellated_conn (ROI-to-ROI matrix) or seed_to_voxel_conn (whole-brain map)
+    based on args.calc_conn.
+
+    Parameters
+    ----------
+    bseries_info : dict
+        {'CONDITION': list of str, 'PATH': list of str} from gen_beta_series.
+    args : argparse.Namespace
+        Must include: calc_conn, out_dir, conn_out_file_pre, template_path,
+        fishZ, pcorr.
+    logger : logging.Logger
+    """
     # Iterate task conditions with beta series
     for i, cond in enumerate(bseries_info['CONDITION']):
 
@@ -478,17 +557,36 @@ def run(args, logger):
     # Get stimulus timing data and save single-column .txt file with beta conds stim timing
     stim_data = get_stim_data(args, logger)
 
+    # Contrast-related checks
+    if args.contrast_labels is not None:
+        if args.contrast_functions is None:
+            logger.error("--contrast_functions must exist if --contrast_labels exist.")
+            sys.exit(1)
+    else:
+        if args.contrast_functions is not None:
+            logger.error("--contrast_labels must exist if --contrast_functions exist.")
+            sys.exit(1)
+
     # Per-condition trial survival QC
     trial_survival = check_trial_survival(stim_data, args.cond_beta_labels, args.censor_path, args.tr, logger)
 
     # Filter conditions by survival (minimum 2 trials required for AFNI estimation)
     original_conds = list(args.cond_beta_labels)
+
+    # Parse contrast functions now, using the full original condition list before any filtering.
+    # This mirrors the task_act pattern: parse-then-drop ensures cont["CONDS"] is valid (dict)
+    # when the drop block iterates over contrasts below.
+    if args.contrast_functions is not None and args.contrast_labels is not None:
+        args.contrast_functions = valid_contrast_functions(
+            args.contrast_functions, args.contrast_labels,
+            original_conds, logger=logger)
+
     args.cond_beta_labels = [c for c in original_conds if trial_survival.get(c, 0) >= 2]
     dropped_conds = [c for c in original_conds if c not in args.cond_beta_labels]
 
     if dropped_conds:
         logger.warning("The following conditions have insufficient surviving trials (< 2) and will be DROPPED: %s", dropped_conds)
-    
+
     if not args.cond_beta_labels:
         logger.error("NO task conditions have sufficient surviving trials. Aborting analysis.")
         sys.exit(1)
@@ -552,13 +650,10 @@ def run(args, logger):
     if args.calc_conn is not None:
         gen_conn(bseries_out, args, logger)
 
-    # Connectivity contrasts
+    # Connectivity contrasts (args.contrast_functions already parsed above)
     if args.contrast_functions is not None and args.contrast_labels is not None:
-        parsed_contrasts = valid_contrast_functions(
-            args.contrast_functions, args.contrast_labels,
-            args.cond_beta_labels, logger=logger)
         if args.calc_conn is not None:
-            gen_conn_contrasts(bseries_out, parsed_contrasts, args.contrast_labels, args, logger)
+            gen_conn_contrasts(bseries_out, args.contrast_functions, args.contrast_labels, args, logger)
             qc_data["contrast_labels"] = args.contrast_labels
         else:
             logger.warning("Contrasts specified but calc_conn is disabled — "
