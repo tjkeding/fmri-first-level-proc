@@ -9,8 +9,8 @@
 # 5. (optional) Runs functional connectivity analysis for available beta series with AFNI's 3dNetCorr
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.2
-# Last updated: 03/11/26
+# Version: 2.3
+# Last updated: 03/12/26
 # ============================================================================
 '''
 REQUIREMENTS:
@@ -26,8 +26,7 @@ INPUTS:
     format = string(path_to_csv); column 1 name = 'CONDITION', column 2 name = 'ONSET' (global times matching --scan_path scan length), column 3 name = 'DURATION'
 --motion_path: global file path to the run-concatenated motion regressors (should have been stripped for dummy scans)
     format = string(path_to_txt) (tab-delimited) with no headers; rows = TR/frame, columns = motion regressors (6 base or 12 with derivatives, controlled by include_motion_derivs)
---censor_path: global file path to the run-concatenated frame motion/outlier censor file (should have been stripped for dummy scans)
-    format = string(path_to_txt) (tab-delimited) with no headers; rows= TR/frame, single column = binary (1=include,0=exclude)
+--fd_threshold: framewise displacement threshold (mm); TRs with FD above this value are censored (censor file is generated internally from --motion_path; it is NOT a user-provided input)
 --cond_beta_labels: list (comma-separated) of task conditions to generate beta series for - all labels should match to rows in the 'CONDITION' column from the timing file
     format = string-list of conditions e.g. 'stimFear,stimSad,stimNeu'
 --out_dir: global directory path for derivative intermediates and task-condition beta series; will create if doesn't exist
@@ -125,18 +124,18 @@ from .first_level_utils import (
     VALID_HRF_MODELS,
 )
 
-def get_stim_data(args, logger):
-    """Read and write stimulus timing files for the task connectivity pipeline.
+def read_stim_data(args, logger):
+    """Read and validate stimulus timing data for the task connectivity pipeline.
 
-    Reads and validates the timing CSV, then creates AFNI-format onset files for
-    conditions NOT in cond_beta_labels (to be controlled for in 3dDeconvolve) and
-    a combined onset file for all beta conditions (used with -stim_times_IM in 3dLSS).
+    Reads and validates the timing CSV without writing any onset files. Separating
+    the read phase from the write phase allows trial-survival filtering to be applied
+    before onset files are written, ensuring dropped conditions receive individual
+    nuisance onset files rather than being silently omitted.
 
     Parameters
     ----------
     args : argparse.Namespace
-        Must include: task_timing_path, cond_beta_labels, out_dir, out_file_pre,
-        hrf_model, custom_hrf.
+        Must include: task_timing_path, cond_beta_labels.
     logger : logging.Logger
 
     Returns
@@ -144,20 +143,51 @@ def get_stim_data(args, logger):
     pd.DataFrame
         Sorted timing data with CONDITION, ONSET, DURATION columns.
     """
-    # Read, validate, and sort stim timing data
-    sorted_df = read_and_validate_stim_data(args.task_timing_path, args.cond_beta_labels, logger=logger)
+    return read_and_validate_stim_data(args.task_timing_path, args.cond_beta_labels, logger=logger)
 
-    # Iterate the different task conditions from the timing file
+
+def write_stim_onset_files(stim_data, args, logger):
+    """Write AFNI-format onset files for the task connectivity pipeline.
+
+    Must be called after trial-survival filtering so that args.cond_beta_labels
+    reflects only surviving conditions. Conditions present in stim_data but NOT
+    in args.cond_beta_labels receive individual onset files (nuisance regressors
+    in 3dDeconvolve). Conditions IN args.cond_beta_labels are accumulated into a
+    single combined onset file for 3dLSS (-stim_times_IM).
+
+    The combined beta onset file accumulates trials in first-appearance order
+    (pandas .unique() traversal of stim_data). This order is returned as
+    beta_cond_order and must be used in gen_beta_series() to correctly map
+    sub-brick indices to conditions.
+
+    Parameters
+    ----------
+    stim_data : pd.DataFrame
+        Sorted timing data with CONDITION, ONSET, DURATION columns.
+    args : argparse.Namespace
+        Must include: cond_beta_labels, out_dir, out_file_pre, hrf_model, custom_hrf.
+    logger : logging.Logger
+
+    Returns
+    -------
+    list of str
+        beta_cond_order: conditions whose onsets were appended to beta_onsets.txt,
+        in the order they were appended (i.e., the order sub-bricks appear in the
+        3dLSS output).
+    """
     betas_onsets = None
     betas_durations = None
-    for cond in sorted_df['CONDITION'].unique():
-        cond_df = sorted_df[sorted_df['CONDITION'] == cond]
+    beta_cond_order = []
 
-        # If a task condition should only be controlled for (no beta series output), create its own timing file
+    # Iterate conditions in first-appearance order (matches 3dLSS sub-brick layout)
+    for cond in stim_data['CONDITION'].unique():
+        cond_df = stim_data[stim_data['CONDITION'] == cond]
+
+        # Conditions not in cond_beta_labels become individual nuisance onset files
         if cond not in args.cond_beta_labels:
             onset_file = f"{args.out_dir}/{args.out_file_pre}_concat_{cond}_onsets.txt"
             write_onset_file(cond_df, onset_file, args.hrf_model, args.custom_hrf, logger=logger)
-        # If we want a beta series for a task condition, add their onsets to betas_onsets
+        # Beta conditions are accumulated into a single combined onset file
         else:
             if betas_onsets is None:
                 betas_onsets = list(cond_df['ONSET'])
@@ -165,14 +195,13 @@ def get_stim_data(args, logger):
             else:
                 betas_onsets.extend(cond_df['ONSET'])
                 betas_durations.extend(cond_df['DURATION'])
-    betas_df = pd.DataFrame({'ONSET': betas_onsets, 'DURATION': betas_durations})
+            beta_cond_order.append(cond)
 
-    # Save all onset times for task conditions requiring beta series
+    betas_df = pd.DataFrame({'ONSET': betas_onsets, 'DURATION': betas_durations})
     beta_onset_file = f"{args.out_dir}/{args.out_file_pre}_concat_beta_onsets.txt"
     write_onset_file(betas_df, beta_onset_file, args.hrf_model, args.custom_hrf, logger=logger)
 
-    # Return formatted, sorted stim times
-    return sorted_df
+    return beta_cond_order
 
 def gen_design_matrix(stim_data, args, logger):
     """Build the 3dDeconvolve design matrix for LSS beta series estimation.
@@ -185,7 +214,7 @@ def gen_design_matrix(stim_data, args, logger):
     Parameters
     ----------
     stim_data : pd.DataFrame
-        Timing data from get_stim_data.
+        Timing data from read_stim_data.
     args : argparse.Namespace
         Must include: scan_path, censor_path, motion_path, CSF_path, WM_path,
         CSF_deriv_path (if use_tissue_derivs), out_dir, out_file_pre, hrf_model,
@@ -209,11 +238,11 @@ def gen_design_matrix(stim_data, args, logger):
                                                  CSF_path=args.CSF_path, WM_path=args.WM_path,
                                                  CSF_deriv_path=CSF_deriv_path, WM_deriv_path=WM_deriv_path,
                                                  tr=args.tr)
-        decon_command.extend(["-num_stimts", f"{1+len(np.unique(stim_data['CONDITION']))-len(args.cond_beta_labels)}"])
+        decon_command.extend(["-num_stimts", f"{1+len(stim_data['CONDITION'].unique())-len(args.cond_beta_labels)}"])
 
         # Iteratively add stim timing for conditions NOT included in beta series
         stim_count = 1
-        for cond in np.unique(stim_data['CONDITION']):
+        for cond in stim_data['CONDITION'].unique():
             if cond not in args.cond_beta_labels:
                 mean_dur = None
                 if args.hrf_model in HRF_DURATION_MODELS:
@@ -251,19 +280,27 @@ def gen_design_matrix(stim_data, args, logger):
     # Remove err file that always seems to be output
     clean_deconvolve_err(args.out_dir)
 
-def gen_beta_series(stim_data, args, logger):
+def gen_beta_series(stim_data, args, beta_cond_order, logger):
     """Generate the full-task LSS beta series and condition-specific beta volumes.
 
     Runs 3dLSS on the design matrix to produce the full-task beta series NIfTI
     (one sub-brick per trial), then extracts condition-specific sub-bricks via 3dcalc
-    for each condition in cond_beta_labels.
+    for each condition in beta_cond_order.
+
+    Sub-brick indices are computed by iterating beta_cond_order — the same order
+    in which condition onsets were appended to beta_onsets.txt by
+    write_stim_onset_files(). This guarantees that total_used correctly tracks
+    cumulative trial counts regardless of alphabetical vs. first-appearance ordering.
 
     Parameters
     ----------
     stim_data : pd.DataFrame
-        Timing data from get_stim_data.
+        Timing data from read_stim_data.
     args : argparse.Namespace
         Must include: out_dir, out_file_pre, scan_path, cond_beta_labels.
+    beta_cond_order : list of str
+        Conditions in the order their onsets were written to beta_onsets.txt
+        (returned by write_stim_onset_files). Determines sub-brick mapping.
     logger : logging.Logger
 
     Returns
@@ -290,47 +327,45 @@ def gen_beta_series(stim_data, args, logger):
     else:
         logger.info("%s/%s_concat_LSS.nii.gz already exists", args.out_dir, args.out_file_pre)
 
-    # Iterate task conditions in stim timing file
+    # Iterate beta conditions in the exact order onsets were written to beta_onsets.txt.
+    # This ensures total_used correctly maps to 3dLSS sub-brick indices.
     bseries_out = {"CONDITION": [], "PATH": []}
     total_used = 0
-    for curr_cond in np.unique(stim_data['CONDITION']):
+    for curr_cond in beta_cond_order:
 
-        # If we want a condition-specific beta series
-        if curr_cond in args.cond_beta_labels:
+        # Get onset times for the condition
+        cond = stim_data[stim_data['CONDITION'] == curr_cond]['ONSET']
 
-            # Get onset times for the condition
-            cond = stim_data[stim_data['CONDITION'] == curr_cond]['ONSET']
+        # Check if condition-specific beta series already exists
+        if not os.path.exists(f"{args.out_dir}/{args.out_file_pre}_concat_bseries_{curr_cond}.nii.gz"):
 
-            # Check if condition-specific beta series already exists
-            if not os.path.exists(f"{args.out_dir}/{args.out_file_pre}_concat_bseries_{curr_cond}.nii.gz"):
-
-                # Create condition index string
-                calc_indices_str = "["
-                for n, onset in enumerate(cond):
-                    if not n == len(cond) - 1:
-                        calc_indices_str = f"{calc_indices_str}{n+total_used},"
-                    else:
-                        calc_indices_str = f"{calc_indices_str}{n+total_used}]"
-
-                # Build the 3dcalc command and create task condition beta series
-                calc_command = ["3dcalc", "-a", f"{args.out_dir}/{args.out_file_pre}_concat_LSS.nii.gz{calc_indices_str}",
-                                "-expr", "a",
-                                "-prefix", f"{args.out_dir}/{args.out_file_pre}_concat_bseries_{curr_cond}.nii.gz"]
-                run_afni_command(calc_command, description=f"3dcalc beta series {curr_cond}", logger=logger)
-
-                if os.path.exists(f"{args.out_dir}/{args.out_file_pre}_concat_bseries_{curr_cond}.nii.gz"):
-                    logger.info("Successfully created beta series %s_concat_bseries_%s.nii.gz", args.out_file_pre, curr_cond)
-                    bseries_out['CONDITION'].append(curr_cond)
-                    bseries_out["PATH"].append(f"{args.out_dir}/{args.out_file_pre}_concat_bseries_{curr_cond}.nii.gz")
+            # Create condition index string
+            calc_indices_str = "["
+            for n, onset in enumerate(cond):
+                if not n == len(cond) - 1:
+                    calc_indices_str = f"{calc_indices_str}{n+total_used},"
                 else:
-                    logger.warning("Failed to create beta series %s_concat_bseries_%s.nii.gz", args.out_file_pre, curr_cond)
-                    logger.warning("Continuing to see if beta series can be created for other task conditions.")
-            else:
-                logger.info("Beta series %s_concat_bseries_%s.nii.gz already exists.", args.out_file_pre, curr_cond)
+                    calc_indices_str = f"{calc_indices_str}{n+total_used}]"
+
+            # Build the 3dcalc command and create task condition beta series
+            calc_command = ["3dcalc", "-a", f"{args.out_dir}/{args.out_file_pre}_concat_LSS.nii.gz{calc_indices_str}",
+                            "-expr", "a",
+                            "-prefix", f"{args.out_dir}/{args.out_file_pre}_concat_bseries_{curr_cond}.nii.gz"]
+            run_afni_command(calc_command, description=f"3dcalc beta series {curr_cond}", logger=logger)
+
+            if os.path.exists(f"{args.out_dir}/{args.out_file_pre}_concat_bseries_{curr_cond}.nii.gz"):
+                logger.info("Successfully created beta series %s_concat_bseries_%s.nii.gz", args.out_file_pre, curr_cond)
                 bseries_out['CONDITION'].append(curr_cond)
                 bseries_out["PATH"].append(f"{args.out_dir}/{args.out_file_pre}_concat_bseries_{curr_cond}.nii.gz")
+            else:
+                logger.warning("Failed to create beta series %s_concat_bseries_%s.nii.gz", args.out_file_pre, curr_cond)
+                logger.warning("Continuing to see if beta series can be created for other task conditions.")
+        else:
+            logger.info("Beta series %s_concat_bseries_%s.nii.gz already exists.", args.out_file_pre, curr_cond)
+            bseries_out['CONDITION'].append(curr_cond)
+            bseries_out["PATH"].append(f"{args.out_dir}/{args.out_file_pre}_concat_bseries_{curr_cond}.nii.gz")
 
-            total_used += len(cond)
+        total_used += len(cond)
 
     # Something went wrong if our output is empty
     if len(bseries_out["CONDITION"]) == 0:
@@ -510,7 +545,40 @@ def gen_conn_contrasts(bseries_info, parsed_contrasts, contrast_labels, args, lo
 
 
 def run(args, logger):
-    """Validate args and execute pipeline. Works from CLI or config runner."""
+    """Validate args and execute the task connectivity pipeline.
+
+    Orchestrates the full task_conn pipeline in the following order:
+    1. Validate extraction and connectivity arguments.
+    2. Optionally clear out_dir (if remove_previous is set).
+    3. Generate motion censor file from motion_path and fd_threshold.
+    4. Prepare motion regressors (truncate to required columns).
+    5. Read and validate stimulus timing data (read_stim_data).
+    6. Parse contrast functions using the full original condition list
+       (parse-then-drop: ensures contrast CONDS dict is valid before filtering).
+    7. Check per-condition trial survival after censoring.
+    8. Filter conditions with fewer than 2 surviving trials (warn and drop).
+    9. Drop contrasts that reference dropped conditions.
+    10. Write AFNI onset files (write_stim_onset_files); returns beta_cond_order
+        (first-appearance order of conditions in beta_onsets.txt).
+    11. Pre-flight DOF check.
+    12. Build 3dDeconvolve design matrix (gen_design_matrix).
+    13. Generate full-task and condition-specific beta series via 3dLSS (gen_beta_series),
+        using beta_cond_order to correctly map sub-bricks to conditions.
+    14. Optionally extract parcel beta series (gen_pbseries).
+    15. Optionally compute functional connectivity (gen_conn).
+    16. Optionally compute connectivity contrasts (gen_conn_contrasts).
+    17. Write QC summary JSON.
+
+    Works from both the CLI (main()) and the config-driven dispatch runner
+    (run_first_level.py / DISPATCH["task_conn"]).
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        All pipeline arguments (see main() argparse block or first_level_config.py
+        build_namespace for the full attribute list).
+    logger : logging.Logger
+    """
     args = copy.copy(args)
 
     logger.info("Beta series will be created for the following task conditions: %s", args.cond_beta_labels)
@@ -554,8 +622,8 @@ def run(args, logger):
 
 
 
-    # Get stimulus timing data and save single-column .txt file with beta conds stim timing
-    stim_data = get_stim_data(args, logger)
+    # Read and validate stimulus timing data (no file I/O yet)
+    stim_data = read_stim_data(args, logger)
 
     # Contrast-related checks
     if args.contrast_labels is not None:
@@ -573,9 +641,8 @@ def run(args, logger):
     # Filter conditions by survival (minimum 2 trials required for AFNI estimation)
     original_conds = list(args.cond_beta_labels)
 
-    # Parse contrast functions now, using the full original condition list before any filtering.
-    # This mirrors the task_act pattern: parse-then-drop ensures cont["CONDS"] is valid (dict)
-    # when the drop block iterates over contrasts below.
+    # Parse contrast functions using the full original condition list before any filtering.
+    # parse-then-drop ensures cont["CONDS"] is a valid dict when the drop block iterates.
     if args.contrast_functions is not None and args.contrast_labels is not None:
         args.contrast_functions = valid_contrast_functions(
             args.contrast_functions, args.contrast_labels,
@@ -597,13 +664,18 @@ def run(args, logger):
         valid_labels = []
         for i, cont in enumerate(args.contrast_functions):
             if any(c in dropped_conds for c in cont["CONDS"]):
-                logger.warning("Contrast '%s' depends on dropped conditions %s and will be SKIPPED.", 
+                logger.warning("Contrast '%s' depends on dropped conditions %s and will be SKIPPED.",
                                args.contrast_labels[i], [c for c in cont["CONDS"] if c in dropped_conds])
             else:
                 valid_contrasts.append(cont)
                 valid_labels.append(args.contrast_labels[i])
         args.contrast_functions = valid_contrasts
         args.contrast_labels = valid_labels
+
+    # Write onset files now that cond_beta_labels reflects only surviving conditions.
+    # Dropped conditions receive individual nuisance onset files; surviving conditions
+    # are accumulated into beta_onsets.txt in first-appearance order.
+    beta_cond_order = write_stim_onset_files(stim_data, args, logger)
 
     # Pre-flight DOF check (conservative lower bound — actual per-trial regressors are higher)
     n_regressors = use_cols + len(args.cond_beta_labels)
@@ -640,7 +712,7 @@ def run(args, logger):
     gen_design_matrix(stim_data, args, logger)
 
     # Generate full task beta-series and condition-specific beta series
-    bseries_out = gen_beta_series(stim_data, args, logger)
+    bseries_out = gen_beta_series(stim_data, args, beta_cond_order, logger)
 
     # Extract pbseries if user provided option
     if args.extract_pbseries:

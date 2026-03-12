@@ -5,8 +5,8 @@
 # Common functions used across task_act, task_conn, and rest_conn pipelines.
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.2
-# Last updated: 03/11/26
+# Version: 2.3
+# Last updated: 03/12/26
 # ============================================================================
 """
 Shared utility functions for the fmri_first_level_proc package.
@@ -20,7 +20,7 @@ This module provides functions used by all three analysis pipelines
 - Notch filtering of motion parameters
 - Trial survival QC
 - HRF model string construction and validation
-- Stimulus timing file I/O
+- Stimulus timing file I/O (read/validate phase: read_and_validate_stim_data; write phase: write_onset_file)
 - AFNI command execution wrapper
 - NIfTI template validation and resampling
 - ROI statistics extraction via 3dROIstats
@@ -687,11 +687,18 @@ def notch_filter_motion(motion_path, tr, stopband, out_dir, out_prefix, label, l
 
     out_path = os.path.join(out_dir, f"{out_prefix}_{label}_notch_motion.1D")
 
-    # 3dTproject on .1D file: rows=timepoints, cols=motion params (no transpose needed)
+    # AFNI interprets .1D files as rows=voxels, cols=timepoints.
+    # A TRs×6 motion file is seen as TRs voxels × 6 timepoints, causing a
+    # "too few timepoints" error in 3dTproject.  The trailing ' (AFNI transpose
+    # operator) presents the file as 6 voxels × TRs timepoints so 3dTproject
+    # operates correctly along the time axis.  After filtering, 3dTproject
+    # writes its output in the same transposed orientation (rows=params,
+    # cols=TRs); 1dtranspose is then used to restore rows=TRs, cols=params
+    # for downstream use.
     cmd = ["3dTproject",
            "-polort", "-1",
            "-dt", str(tr),
-           "-input", f"{motion_6col}",
+           "-input", f"{motion_6col}'",
            "-stopband", str(stopband[0]), str(stopband[1]),
            "-prefix", out_path]
 
@@ -701,7 +708,16 @@ def notch_filter_motion(motion_path, tr, stopband, out_dir, out_prefix, label, l
         logger.error("Expected notch-filtered motion file not found: %s", out_path)
         sys.exit(1)
 
-    logger.info("Notch-filtered motion parameters saved to %s", out_path)
+    # Restore rows=TRs, cols=params orientation (3dTproject output is transposed)
+    transposed_path = out_path + ".transposed.1D"
+    transpose_cmd = ["1dtranspose", out_path, transposed_path]
+    run_afni_command(transpose_cmd, description=f"1dtranspose notch filter {label}", logger=logger)
+    if not os.path.exists(transposed_path):
+        logger.error("1dtranspose failed for notch-filtered motion: %s", out_path)
+        sys.exit(1)
+    os.replace(transposed_path, out_path)
+
+    logger.info("Notch-filtered motion parameters (rows=TRs, cols=params) saved to %s", out_path)
     return out_path
 
 def compute_tissue_derivative(tissue_path, out_dir, out_prefix, tissue_label, logger):

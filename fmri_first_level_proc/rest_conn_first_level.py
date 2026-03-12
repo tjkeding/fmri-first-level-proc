@@ -8,8 +8,8 @@
 # 4. (optional) Runs functional connectivity analysis with AFNI's 3dNetCorr
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.2
-# Last updated: 03/11/26
+# Version: 2.3
+# Last updated: 03/12/26
 # ============================================================================
 '''
 REQUIREMENTS:
@@ -312,7 +312,32 @@ def gen_conn(args, logger):
         )
 
 def run(args, logger):
-    """Validate args and execute pipeline. Works from CLI or config runner."""
+    """Validate args and execute the resting-state connectivity pipeline.
+
+    Orchestrates the full rest_conn pipeline in the following order:
+    1. Validate that all run-level path lists are the same length.
+    2. Log GSR warning if GS_paths is provided.
+    3. Optionally clear out_dir (if remove_previous is set).
+    4. Validate extraction and connectivity arguments.
+    5. Generate per-run residual dense time series via 3dTproject (gen_residual_ts),
+       which internally: optionally notch-filters motion, generates per-run censor
+       files, runs per-run DOF checks (skip runs with DOF < 1), and concatenates
+       surviving runs via 3dTcat.
+    6. Collect per-run censoring statistics for QC.
+    7. Optionally extract parcel time series from the concatenated residuals (gen_ptseries).
+    8. Optionally compute functional connectivity from the concatenated residuals (gen_conn).
+    9. Write QC summary JSON.
+
+    Works from both the CLI (main()) and the config-driven dispatch runner
+    (run_first_level.py / DISPATCH["rest_conn"]).
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        All pipeline arguments (see main() argparse block or first_level_config.py
+        build_namespace for the full attribute list).
+    logger : logging.Logger
+    """
     args = copy.copy(args)
 
     # Validate all path lists are the same length (CLI usage may skip config validation)

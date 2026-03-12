@@ -7,8 +7,8 @@
 # 3. (optional) Extract parcel-level/ROI activation with a provided template with AFNI's 3dROIstats
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.2
-# Last updated: 03/11/26
+# Version: 2.3
+# Last updated: 03/12/26
 # ============================================================================
 '''
 REQUIREMENTS:
@@ -24,8 +24,7 @@ INPUTS:
     format = string(path_to_csv); column 1 name = 'CONDITION', column 2 name = 'ONSET' (global times matching --scan_path scan length), column 3 name = 'DURATION'
 --motion_path: global file path to the run-concatenated motion regressors (should have been stripped for dummy scans)
     format = string(path_to_txt) (tab-delimited) with no headers; rows = TR/frame, columns = motion regressors (6 base or 12 with derivatives, controlled by include_motion_derivs)
---censor_path: global file path to the run-concatenated frame motion/outlier censor file (should have been stripped for dummy scans)
-    format = string(path_to_txt) (tab-delimited) with no headers; rows= TR/frame, single column = binary (1=include,0=exclude)
+--fd_threshold: framewise displacement threshold (mm); TRs with FD above this value are censored (censor file is generated internally from --motion_path; it is NOT a user-provided input)
 --cond_labels: string-list (comma-separated) of task conditions to use in first level analyses - labels should match the 'CONDITION' column from the timing file;
     Conditions in cond_labels will be the only ones used in the regression (more could be in task_timing_path file) and the only ones that can be used within contrast_functions (optional)
     format = string-list of conditions e.g. 'stimFear,stimSad,stimNeu'
@@ -136,18 +135,18 @@ def valid_extract_labels(cond_labels, contrast_labels, extract_labels, logger=No
             logger.error("Every entry in --extract_labels must have an exact label in --contrast_labels or --cond_labels.")
             sys.exit(1)
 
-def get_stim_data(args, logger):
-    """Read and write per-condition AFNI onset files for the task activation pipeline.
+def read_stim_data(args, logger):
+    """Read and validate stimulus timing data for the task activation pipeline.
 
-    Reads and validates the timing CSV, then writes AFNI-format onset files for
-    each condition in cond_labels (used as -stim_times inputs to 3dDeconvolve).
-    Conditions not in cond_labels are silently ignored.
+    Reads and validates the timing CSV without writing any onset files. Separating
+    the read phase from the write phase allows trial-survival filtering to be applied
+    before onset files are written, maintaining architectural consistency with the
+    task connectivity pipeline.
 
     Parameters
     ----------
     args : argparse.Namespace
-        Must include: task_timing_path, cond_labels, out_dir, out_file_pre,
-        hrf_model, custom_hrf.
+        Must include: task_timing_path, cond_labels.
     logger : logging.Logger
 
     Returns
@@ -155,17 +154,30 @@ def get_stim_data(args, logger):
     pd.DataFrame
         Sorted timing data with CONDITION, ONSET, DURATION columns.
     """
-    # Read, validate, and sort stim timing data
-    sorted_df = read_and_validate_stim_data(args.task_timing_path, args.cond_labels, logger=logger)
+    return read_and_validate_stim_data(args.task_timing_path, args.cond_labels, logger=logger)
 
-    # Create individual (run-concatenated) timing files
-    for cond in sorted_df['CONDITION'].unique():
-        cond_df = sorted_df[sorted_df['CONDITION'] == cond]
+
+def write_stim_onset_files(stim_data, args, logger):
+    """Write per-condition AFNI onset files for the task activation pipeline.
+
+    Must be called after trial-survival filtering so that args.cond_labels reflects
+    only surviving conditions. Writes one AFNI-format onset file per condition in
+    args.cond_labels (used as -stim_times inputs to 3dDeconvolve). Conditions present
+    in stim_data but not in args.cond_labels are silently ignored.
+
+    Parameters
+    ----------
+    stim_data : pd.DataFrame
+        Sorted timing data with CONDITION, ONSET, DURATION columns.
+    args : argparse.Namespace
+        Must include: cond_labels, out_dir, out_file_pre, hrf_model, custom_hrf.
+    logger : logging.Logger
+    """
+    for cond in stim_data['CONDITION'].unique():
+        cond_df = stim_data[stim_data['CONDITION'] == cond]
         if cond in args.cond_labels:
             onset_file = f"{args.out_dir}/{args.out_file_pre}_concat_{cond}_onsets.txt"
             write_onset_file(cond_df, onset_file, args.hrf_model, args.custom_hrf, logger=logger)
-
-    return sorted_df
 
 def run_first_level(stim_data, args, logger):
     """Execute the 3dDeconvolve activation first-level regression.
@@ -179,7 +191,7 @@ def run_first_level(stim_data, args, logger):
     Parameters
     ----------
     stim_data : pd.DataFrame
-        Timing data from get_stim_data.
+        Timing data from read_stim_data.
     args : argparse.Namespace
         Must include: scan_path, censor_path, motion_path, CSF_path, WM_path,
         out_dir, out_file_pre, cond_labels, hrf_model, custom_hrf,
@@ -437,7 +449,33 @@ def extract_effects(args, logger):
             sys.exit(1)
 
 def run(args, logger):
-    """Validate args and execute pipeline. Works from CLI or config runner."""
+    """Validate args and execute the task activation pipeline.
+
+    Orchestrates the full task_act pipeline in the following order:
+    1. Validate contrast and extraction arguments.
+    2. Optionally clear out_dir (if remove_previous is set).
+    3. Generate motion censor file from motion_path and fd_threshold.
+    4. Prepare motion regressors (truncate to required columns).
+    5. Read and validate stimulus timing data (read_stim_data).
+    6. Check per-condition trial survival after censoring.
+    7. Filter conditions with fewer than 2 surviving trials (warn and drop).
+    8. Drop contrasts/extractions that reference dropped conditions.
+    9. Write per-condition AFNI onset files (write_stim_onset_files).
+    10. Pre-flight DOF check.
+    11. Run 3dDeconvolve GLM (run_first_level).
+    12. Optionally extract condition/contrast-specific stat maps (extract_effects).
+    13. Write QC summary JSON.
+
+    Works from both the CLI (main()) and the config-driven dispatch runner
+    (run_first_level.py / DISPATCH["task_act"]).
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        All pipeline arguments (see main() argparse block or first_level_config.py
+        build_namespace for the full attribute list).
+    logger : logging.Logger
+    """
     args = copy.copy(args)
 
     logger.info("First-level regression will use the following task conditions: %s", args.cond_labels)
@@ -501,8 +539,8 @@ def run(args, logger):
         args.motion_path, use_cols, args.out_dir, args.out_file_pre, "concat", logger)
 
 
-    # Get stimulus timing data and save AFNI-safe single-column .txt files
-    stim_data = get_stim_data(args, logger)
+    # Read and validate stimulus timing data (no file I/O yet)
+    stim_data = read_stim_data(args, logger)
 
     # Per-condition trial survival QC
     trial_survival = check_trial_survival(stim_data, args.cond_labels, args.censor_path, args.tr, logger)
@@ -543,6 +581,9 @@ def run(args, logger):
         if not args.extract_labels:
             logger.warning("No valid effects left to extract. Disabling extraction.")
             args.extract = False
+
+    # Write onset files now that cond_labels reflects only surviving conditions
+    write_stim_onset_files(stim_data, args, logger)
 
     # Pre-flight DOF check
     n_regressors = use_cols + len(args.cond_labels)

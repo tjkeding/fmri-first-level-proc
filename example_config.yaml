@@ -3,9 +3,9 @@
 # ============================================================================
 #
 # Usage:
-#   python run_first_level.py --config example_config.yaml --dry-run
-#   python run_first_level.py --config example_config.yaml
-#   python run_first_level.py --config example_config.yaml --analyses 0 2
+#   run-first-level --config example_config.yaml --dry-run
+#   run-first-level --config example_config.yaml
+#   run-first-level --config example_config.yaml --analyses 0 2
 #      --analyses 0 2 => only first and third analysis blocks will be run
 #
 # This file demonstrates all three analysis types with every available option.

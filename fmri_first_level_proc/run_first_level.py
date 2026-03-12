@@ -6,14 +6,14 @@
 # to the appropriate pipeline script's run() function.
 #
 # Usage:
-#   python run_first_level.py --config my_study.yaml
-#   python run_first_level.py --config my_study.yaml --dry-run
-#   python run_first_level.py --config my_study.yaml --analyses 0 2
-#   python run_first_level.py --config my_study.yaml --log-file run.log
+#   run-first-level --config my_study.yaml
+#   run-first-level --config my_study.yaml --dry-run
+#   run-first-level --config my_study.yaml --analyses 0 2
+#   run-first-level --config my_study.yaml --log-file run.log
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.0
-# Last updated: 02/17/26
+# Version: 2.3
+# Last updated: 03/12/26
 # ============================================================================
 
 import sys
@@ -36,6 +36,7 @@ DISPATCH = {
 }
 
 def main():
+    """CLI entrypoint: parse config, validate, and dispatch analysis blocks."""
     parser = argparse.ArgumentParser(
         description="Run fMRI first-level analyses from a YAML config file."
     )
