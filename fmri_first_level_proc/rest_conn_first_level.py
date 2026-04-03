@@ -8,8 +8,8 @@
 # 4. (optional) Runs functional connectivity analysis with AFNI's 3dNetCorr
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.3.1
-# Last updated: 03/13/26
+# Version: 2.4.0
+# Last updated: 04/02/26
 # ============================================================================
 '''
 REQUIREMENTS:
@@ -101,6 +101,7 @@ from .first_level_utils import (
     compute_dof,
     validate_extract_options,
     validate_connectivity_options,
+    gen_min_outlier_epi,
 )
 
 def gen_residual_ts(args, logger):
@@ -319,14 +320,16 @@ def run(args, logger):
     2. Log GSR warning if GS_paths is provided.
     3. Optionally clear out_dir (if remove_previous is set).
     4. Validate extraction and connectivity arguments.
-    5. Generate per-run residual dense time series via 3dTproject (gen_residual_ts),
+    5. Extract minimum-outlier EPI frame per run (gen_min_outlier_epi; mandatory).
+    6. Optionally extract pre-regression parcellated time series per run (extract_raw_ptseries).
+    7. Generate per-run residual dense time series via 3dTproject (gen_residual_ts),
        which internally: optionally notch-filters motion, generates per-run censor
        files, runs per-run DOF checks (skip runs with DOF < 1), and concatenates
        surviving runs via 3dTcat.
-    6. Collect per-run censoring statistics for QC.
-    7. Optionally extract parcel time series from the concatenated residuals (gen_ptseries).
-    8. Optionally compute functional connectivity from the concatenated residuals (gen_conn).
-    9. Write QC summary JSON.
+    8. Collect per-run censoring statistics for QC.
+    9. Optionally extract parcel time series from the concatenated residuals (gen_ptseries).
+    10. Optionally compute functional connectivity from the concatenated residuals (gen_conn).
+    11. Write QC summary JSON.
 
     Works from both the CLI (main()) and the config-driven dispatch runner
     (run_first_level.py / DISPATCH["rest_conn"]).
@@ -383,6 +386,34 @@ def run(args, logger):
         logger.info("Connectivity will not be output after generating residual time series.")
 
     # ---------------------------------
+
+    # Extract minimum-outlier representative EPI frame per run (mandatory, before regression)
+    for i, scan in enumerate(args.scan_paths):
+        gen_min_outlier_epi(scan, args.out_dir, args.out_file_pre, f"run{i+1}", logger)
+
+    # Extract pre-regression parcellated time series per run if requested
+    if getattr(args, 'extract_raw_ptseries', False):
+        if args.extract_out_file_pre is None:
+            logger.error("extract_raw_ptseries requires extract_out_file_pre to be set.")
+            sys.exit(1)
+        if args.template_path is None:
+            logger.error("extract_raw_ptseries requires a valid template_path.")
+            sys.exit(1)
+        validated_tpl = validate_template(args.scan_paths[0], args.template_path,
+            args.out_dir, args.force_diff_atlas, conn_type="extract", logger=logger)
+        for i, scan in enumerate(args.scan_paths):
+            raw_out = os.path.join(args.out_dir,
+                f"{args.extract_out_file_pre}_run{i+1}_raw_ptseries.csv")
+            if not os.path.exists(raw_out):
+                raw_df = extract_roi_stats(scan, validated_tpl, args.average_type, logger=logger)
+                raw_df.to_csv(raw_out)
+                if os.path.exists(raw_out):
+                    logger.info("Extracted raw ptseries for run %d to %s.", i+1, raw_out)
+                else:
+                    logger.error("Failed to extract raw ptseries for run %d.", i+1)
+                    sys.exit(1)
+            else:
+                logger.info("Raw ptseries for run %d already exists: %s", i+1, raw_out)
 
     # Build QC summary data with per-run censoring stats
     qc_data = {
@@ -470,6 +501,8 @@ def main():
     parser.add_argument("--calc_conn", type=valid_conn_type, required=False)
     parser.add_argument("--conn_out_file_pre", type=str, required=False)
     parser.add_argument("--template_path", type=file_path_exists, required=False)
+    parser.add_argument("--extract_raw_ptseries", action='store_true', default=False, required=False,
+                        help="Extract pre-regression parcellated time series per run (requires --template_path and --extract_out_file_pre).")
     parser.add_argument("--force_diff_atlas", action='store_true', required=False)
     parser.add_argument("--pcorr", action='store_true', required=False)
     parser.add_argument("--fishZ", action='store_true', required=False)

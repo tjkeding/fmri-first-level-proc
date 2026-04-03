@@ -17,3 +17,8 @@
 !fmri_first_level_proc/run_first_level.py
 !fmri_first_level_proc/task_act_first_level.py
 !fmri_first_level_proc/task_conn_first_level.py
+
+# AID Framework disclosure files
+!AID_LOG.md
+!.aid/
+!.aid/**

@@ -7,8 +7,8 @@
 # 3. (optional) Extract parcel-level/ROI activation with a provided template with AFNI's 3dROIstats
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.3.1
-# Last updated: 03/13/26
+# Version: 2.4.0
+# Last updated: 04/02/26
 # ============================================================================
 '''
 REQUIREMENTS:
@@ -108,6 +108,7 @@ from .first_level_utils import (
     write_qc_summary,
     compute_dof,
     valid_contrast_functions,
+    gen_min_outlier_epi,
     CENSOR_WARN_THRESHOLD,
     CENSOR_HIGH_THRESHOLD,
     HRF_DM_MODELS,
@@ -454,17 +455,20 @@ def run(args, logger):
     Orchestrates the full task_act pipeline in the following order:
     1. Validate contrast and extraction arguments.
     2. Optionally clear out_dir (if remove_previous is set).
-    3. Generate motion censor file from motion_path and fd_threshold.
-    4. Prepare motion regressors (truncate to required columns).
-    5. Read and validate stimulus timing data (read_stim_data).
-    6. Check per-condition trial survival after censoring.
-    7. Filter conditions with fewer than 2 surviving trials (warn and drop).
-    8. Drop contrasts/extractions that reference dropped conditions.
-    9. Write per-condition AFNI onset files (write_stim_onset_files).
-    10. Pre-flight DOF check.
-    11. Run 3dDeconvolve GLM (run_first_level).
-    12. Optionally extract condition/contrast-specific stat maps (extract_effects).
-    13. Write QC summary JSON.
+    3. Validate extraction and connectivity template options.
+    4. Optionally extract pre-regression parcellated time series (extract_raw_ptseries).
+    5. Extract minimum-outlier EPI frame (gen_min_outlier_epi; mandatory).
+    6. Generate motion censor file from motion_path and fd_threshold.
+    7. Prepare motion regressors (truncate to required columns).
+    8. Read and validate stimulus timing data (read_stim_data).
+    9. Check per-condition trial survival after censoring.
+    10. Filter conditions with fewer than 2 surviving trials (warn and drop).
+    11. Drop contrasts/extractions that reference dropped conditions.
+    12. Write per-condition AFNI onset files (write_stim_onset_files).
+    13. Pre-flight DOF check.
+    14. Run 3dDeconvolve GLM (run_first_level).
+    15. Optionally extract condition/contrast-specific stat maps (extract_effects).
+    16. Write QC summary JSON.
 
     Works from both the CLI (main()) and the config-driven dispatch runner
     (run_first_level.py / DISPATCH["task_act"]).
@@ -526,7 +530,33 @@ def run(args, logger):
     else:
         logger.info("Activation will not be extracted after generating voxelwise maps.")
 
+    # Extract pre-regression parcellated time series if requested
+    if getattr(args, 'extract_raw_ptseries', False):
+        if args.extract_out_file_pre is None:
+            logger.error("extract_raw_ptseries requires extract_out_file_pre to be set.")
+            sys.exit(1)
+        raw_out = os.path.join(args.out_dir, f"{args.extract_out_file_pre}_raw_ptseries.csv")
+        if not os.path.exists(raw_out):
+            if args.template_path is None or args.template_path == "WB":
+                logger.error("extract_raw_ptseries requires a valid template_path (not whole-brain).")
+                sys.exit(1)
+            # Validate template if not already validated by the extract block above
+            validated_tpl = validate_template(args.scan_path, args.template_path,
+                args.out_dir, args.force_diff_atlas, conn_type="extract", logger=logger)
+            raw_df = extract_roi_stats(args.scan_path, validated_tpl, args.average_type, logger=logger)
+            raw_df.to_csv(raw_out)
+            if os.path.exists(raw_out):
+                logger.info("Extracted raw (pre-regression) ptseries to %s.", raw_out)
+            else:
+                logger.error("Failed to extract raw ptseries.")
+                sys.exit(1)
+        else:
+            logger.info("Raw ptseries already exists: %s", raw_out)
+
     # ---------------------------------
+
+    # Extract minimum-outlier representative EPI frame (mandatory, before regression)
+    gen_min_outlier_epi(args.scan_path, args.out_dir, args.out_file_pre, "", logger)
 
     # Generate censor file from motion regressors (before prepare_motion_file overwrites path)
     args.censor_path = create_censor_file(
@@ -668,6 +698,8 @@ def main():
     parser.add_argument("--template_path", type=file_path_exists, required=False)
     parser.add_argument("--average_type", type=valid_ave_type, required=False)
     parser.add_argument("--extract_resids", action='store_true', required=False)
+    parser.add_argument("--extract_raw_ptseries", action='store_true', default=False, required=False,
+                        help="Extract pre-regression parcellated time series (requires --template_path and --extract_out_file_pre).")
     parser.add_argument("--force_diff_atlas", action='store_true', required=False)
     parser.add_argument("--use_tissue_derivs", action='store_true', default=False, required=False,
                         help="Include first temporal derivatives of tissue signals (CSF/WM) as additional nuisance regressors.")

@@ -5,8 +5,8 @@
 # Common functions used across task_act, task_conn, and rest_conn pipelines.
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.3.1
-# Last updated: 03/13/26
+# Version: 2.4.0
+# Last updated: 04/02/26
 # ============================================================================
 """
 Shared utility functions for the fmri_first_level_proc package.
@@ -24,6 +24,7 @@ This module provides functions used by all three analysis pipelines
 - AFNI command execution wrapper
 - NIfTI template validation and resampling
 - ROI statistics extraction via 3dROIstats
+- Minimum-outlier EPI frame extraction (gen_min_outlier_epi)
 - QC summary output
 - Degrees of freedom computation
 - Linear contrast parsing and validation
@@ -94,6 +95,16 @@ def prepare_motion_file(motion_path, use_columns, out_dir, out_prefix, label, lo
     -------
     str
         Path to the prepared motion file.
+
+    Notes
+    -----
+    Rotation parameters are assumed to be in **degrees**. The pipeline passes
+    motion values through to AFNI without unit conversion. The expected column
+    order is ``[tx, ty, tz, rx, ry, rz, ...]`` (translations in mm first,
+    rotations in degrees second). AFNI's ``1d_tool.py -censor_motion`` uses
+    an Euclidean norm without radius scaling, so 1 degree ~ 1 mm of arc at
+    the standard ~57.3 mm head radius -- this is AFNI's intended convention.
+    Passing radians instead of degrees will underweight rotational FD by ~57x.
     """
     try:
         data = np.loadtxt(motion_path)
@@ -1112,7 +1123,91 @@ def extract_roi_stats(nifti_path, template_path, average_type, logger=None):
         inplace=True,
     )
     return new_df
-    
+
+# ----------------------------------------------------------------------------
+# Min-Outlier EPI
+# ----------------------------------------------------------------------------
+
+def gen_min_outlier_epi(scan_path, out_dir, out_file_pre, label, logger):
+    """Extract the minimum-outlier EPI frame from a 4D scan.
+
+    Identifies the TR with the lowest voxelwise outlier fraction (via AFNI's
+    ``3dToutcount -automask -fraction``) and extracts that single volume with
+    ``3dbucket``. This produces a representative EPI frame suitable for
+    alignment QC without the blurring introduced by temporal averaging.
+
+    Parameters
+    ----------
+    scan_path : str
+        Path to the 4D NIfTI scan.
+    out_dir : str
+        Output directory.
+    out_file_pre : str
+        Output filename prefix.
+    label : str
+        Descriptive label appended to the filename. Use ``""`` for task
+        pipelines (single scan) or ``"run1"``, ``"run2"``, etc. for
+        rest_conn (per-run).
+    logger : logging.Logger
+
+    Returns
+    -------
+    str
+        Path to the extracted single-volume NIfTI.
+    """
+    # Build output filename
+    if label:
+        out_name = f"{out_file_pre}_{label}_min_outlier_epi.nii.gz"
+    else:
+        out_name = f"{out_file_pre}_min_outlier_epi.nii.gz"
+    out_path = os.path.join(out_dir, out_name)
+
+    # Skip if already exists
+    if os.path.exists(out_path):
+        logger.info("Min-outlier EPI already exists: %s", out_path)
+        return out_path
+
+    # Run 3dToutcount to get per-TR outlier fractions
+    toutcount_cmd = ["3dToutcount", "-automask", "-fraction", "-quiet", scan_path]
+    try:
+        toutcount_out = run_afni_command(
+            toutcount_cmd, capture_output=True,
+            description="3dToutcount min-outlier scan", logger=logger)
+    except Exception as e:
+        logger.error("3dToutcount failed for %s: %s", scan_path, e)
+        sys.exit(1)
+
+    # Parse outlier fractions (one float per TR)
+    try:
+        fractions = np.array([float(v) for v in toutcount_out.strip().split()])
+    except (ValueError, AttributeError) as e:
+        logger.error("Could not parse 3dToutcount output for %s: %s", scan_path, e)
+        sys.exit(1)
+
+    if len(fractions) == 0:
+        logger.error("3dToutcount returned no data for %s.", scan_path)
+        sys.exit(1)
+
+    min_idx = int(np.argmin(fractions))
+    logger.info("Min-outlier TR for %s: index %d (outlier fraction = %.6f).",
+                out_name, min_idx, fractions[min_idx])
+
+    # Extract the minimum-outlier volume
+    bucket_cmd = ["3dbucket", "-prefix", out_path, f"{scan_path}[{min_idx}]"]
+    try:
+        run_afni_command(bucket_cmd, description="3dbucket min-outlier EPI", logger=logger)
+    except Exception as e:
+        logger.error("3dbucket failed for %s[%d]: %s", scan_path, min_idx, e)
+        sys.exit(1)
+
+    if os.path.exists(out_path):
+        logger.info("Successfully extracted min-outlier EPI: %s", out_path)
+    else:
+        logger.error("Failed to create min-outlier EPI: %s", out_path)
+        sys.exit(1)
+
+    return out_path
+
 # ----------------------------------------------------------------------------
 # QC Summary Output
 # ----------------------------------------------------------------------------

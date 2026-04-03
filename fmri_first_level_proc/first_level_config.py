@@ -7,8 +7,8 @@
 # compatible with each script's run() function.
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.3.1
-# Last updated: 03/13/26
+# Version: 2.4.0
+# Last updated: 04/02/26
 # ============================================================================
 """
 YAML configuration loader, validator, and namespace builder for fmri_first_level_proc.
@@ -361,13 +361,22 @@ def validate_config(raw_config, logger):
                     if ext["extract_stat"] not in VALID_STAT_TYPES:
                         logger.error("[%s] extraction.extract_stat must be one of %s.", label, VALID_STAT_TYPES)
                         sys.exit(1)
+                if ext.get("extract_raw_ptseries", False) and "extract_out_file_pre" not in ext:
+                    logger.error("[%s] extraction block missing 'extract_out_file_pre' for task_act when extract_raw_ptseries=true.", label)
+                    sys.exit(1)
             elif atype == "task_conn":
                 if ext.get("extract_pbseries", False) and "extract_out_file_pre" not in ext:
                     logger.error("[%s] extraction block missing 'extract_out_file_pre' for task_conn when extract_pbseries=true.", label)
                     sys.exit(1)
+                if ext.get("extract_raw_ptseries", False) and "extract_out_file_pre" not in ext:
+                    logger.error("[%s] extraction block missing 'extract_out_file_pre' for task_conn when extract_raw_ptseries=true.", label)
+                    sys.exit(1)
             elif atype == "rest_conn":
                 if ext.get("extract_ptseries", False) and "extract_out_file_pre" not in ext:
                     logger.error("[%s] extraction block missing 'extract_out_file_pre' for rest_conn when extract_ptseries=true.", label)
+                    sys.exit(1)
+                if ext.get("extract_raw_ptseries", False) and "extract_out_file_pre" not in ext:
+                    logger.error("[%s] extraction block missing 'extract_out_file_pre' for rest_conn when extract_raw_ptseries=true.", label)
                     sys.exit(1)
 
         # Connectivity validation
@@ -498,6 +507,7 @@ def build_namespace(merged_block, logger):
         # Extraction — extract key is the on/off switch
         if extraction is not None:
             ns.extract = bool(extraction.get("extract", False))
+            ns.extract_raw_ptseries = bool(extraction.get("extract_raw_ptseries", False))
             if ns.extract:
                 ns.extract_labels = extraction.get("extract_labels")
                 ns.extract_stat = extraction.get("extract_stat")
@@ -506,10 +516,11 @@ def build_namespace(merged_block, logger):
             else:
                 ns.extract_labels = None
                 ns.extract_stat = None
-                ns.extract_out_file_pre = None
+                ns.extract_out_file_pre = extraction.get("extract_out_file_pre") if ns.extract_raw_ptseries else None
                 ns.extract_resids = False
         else:
             ns.extract = False
+            ns.extract_raw_ptseries = False
             ns.extract_labels = None
             ns.extract_stat = None
             ns.extract_out_file_pre = None
@@ -545,9 +556,11 @@ def build_namespace(merged_block, logger):
         # Extraction
         if extraction is not None:
             ns.extract_pbseries = bool(extraction.get("extract_pbseries", False))
+            ns.extract_raw_ptseries = bool(extraction.get("extract_raw_ptseries", False))
             ns.extract_out_file_pre = extraction.get("extract_out_file_pre")
         else:
             ns.extract_pbseries = False
+            ns.extract_raw_ptseries = False
             ns.extract_out_file_pre = None
 
         # Connectivity
@@ -575,9 +588,11 @@ def build_namespace(merged_block, logger):
         # Extraction
         if extraction is not None:
             ns.extract_ptseries = bool(extraction.get("extract_ptseries", False))
+            ns.extract_raw_ptseries = bool(extraction.get("extract_raw_ptseries", False))
             ns.extract_out_file_pre = extraction.get("extract_out_file_pre")
         else:
             ns.extract_ptseries = False
+            ns.extract_raw_ptseries = False
             ns.extract_out_file_pre = None
 
         # Connectivity

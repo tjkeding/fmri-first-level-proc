@@ -9,7 +9,8 @@ A YAML-driven Python framework for first-level fMRI analysis (Task Activation, T
   - **Task Connectivity (`task_conn`):** Beta series estimation via `3dLSS`. Supports parcel beta series extraction, functional connectivity, and connectivity contrasts.
   - **Resting-State Connectivity (`rest_conn`):** Residual time series via `3dTproject` with bandpass filtering. Supports parcel time series extraction and functional connectivity.
 - **Config-Driven:** Define complex analysis batches in a single YAML file.
-- **Robustness:** Automated QC, motion censoring, trial survival checks, and DOF pre-flight verification.
+- **Robustness:** Automated QC, motion censoring (degrees-only convention; column order `[tx, ty, tz, rx, ry, rz]`), trial survival checks, DOF pre-flight verification, and mandatory minimum-outlier EPI frame extraction for alignment QC.
+- **Pre-Regression Extraction:** Optional `extract_raw_ptseries` toggle to capture parcellated time series before nuisance regression.
 - **Parallel Processing:** Native AFNI multi-core support.
 
 ## Prerequisites

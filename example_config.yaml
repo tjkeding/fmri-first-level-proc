@@ -82,6 +82,7 @@ analyses:
       extract_stat: "z"          # "z" | "t" | "r"
       extract_out_file_pre: "subj001_nback_baseline_Shen368"
       extract_resids: false      # true = extract residuals as well as stats
+      extract_raw_ptseries: false  # true = extract pre-regression parcellated time series (requires template_path and extract_out_file_pre)
 
   # ========================================================================
   # TASK CONNECTIVITY (type: task_conn)
@@ -119,6 +120,7 @@ analyses:
     extraction:
       extract_pbseries: true     # true = extract parcel beta series, false = skip
       extract_out_file_pre: "subj001_nback_baseline_Shen368"
+      extract_raw_ptseries: false  # true = extract pre-regression parcellated time series (requires template_path and extract_out_file_pre)
 
     # -- Connectivity --
     connectivity:
@@ -182,6 +184,7 @@ analyses:
     extraction:
       extract_ptseries: true     # true = extract parcel time series, false = skip
       extract_out_file_pre: "subj001_rest_baseline_Shen368"
+      extract_raw_ptseries: false  # true = extract pre-regression parcellated time series per run (requires template_path and extract_out_file_pre)
 
     # -- Connectivity --
     connectivity:

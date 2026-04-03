@@ -9,8 +9,8 @@
 # 5. (optional) Runs functional connectivity analysis for available beta series with AFNI's 3dNetCorr
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.3.1
-# Last updated: 03/13/26
+# Version: 2.4.0
+# Last updated: 04/02/26
 # ============================================================================
 '''
 REQUIREMENTS:
@@ -118,6 +118,7 @@ from .first_level_utils import (
     compute_matrix_contrast,
     validate_extract_options,
     validate_connectivity_options,
+    gen_min_outlier_epi,
     HRF_DM_MODELS,
     HRF_IMPULSE_MODELS,
     HRF_DURATION_MODELS,
@@ -550,24 +551,27 @@ def run(args, logger):
     Orchestrates the full task_conn pipeline in the following order:
     1. Validate extraction and connectivity arguments.
     2. Optionally clear out_dir (if remove_previous is set).
-    3. Generate motion censor file from motion_path and fd_threshold.
-    4. Prepare motion regressors (truncate to required columns).
-    5. Read and validate stimulus timing data (read_stim_data).
-    6. Parse contrast functions using the full original condition list
+    3. Validate extraction and connectivity template options.
+    4. Optionally extract pre-regression parcellated time series (extract_raw_ptseries).
+    5. Extract minimum-outlier EPI frame (gen_min_outlier_epi; mandatory).
+    6. Generate motion censor file from motion_path and fd_threshold.
+    7. Prepare motion regressors (truncate to required columns).
+    8. Read and validate stimulus timing data (read_stim_data).
+    9. Parse contrast functions using the full original condition list
        (parse-then-drop: ensures contrast CONDS dict is valid before filtering).
-    7. Check per-condition trial survival after censoring.
-    8. Filter conditions with fewer than 2 surviving trials (warn and drop).
-    9. Drop contrasts that reference dropped conditions.
-    10. Write AFNI onset files (write_stim_onset_files); returns beta_cond_order
+    10. Check per-condition trial survival after censoring.
+    11. Filter conditions with fewer than 2 surviving trials (warn and drop).
+    12. Drop contrasts that reference dropped conditions.
+    13. Write AFNI onset files (write_stim_onset_files); returns beta_cond_order
         (first-appearance order of conditions in beta_onsets.txt).
-    11. Pre-flight DOF check.
-    12. Build 3dDeconvolve design matrix (gen_design_matrix).
-    13. Generate full-task and condition-specific beta series via 3dLSS (gen_beta_series),
+    14. Pre-flight DOF check.
+    15. Build 3dDeconvolve design matrix (gen_design_matrix).
+    16. Generate full-task and condition-specific beta series via 3dLSS (gen_beta_series),
         using beta_cond_order to correctly map sub-bricks to conditions.
-    14. Optionally extract parcel beta series (gen_pbseries).
-    15. Optionally compute functional connectivity (gen_conn).
-    16. Optionally compute connectivity contrasts (gen_conn_contrasts).
-    17. Write QC summary JSON.
+    17. Optionally extract parcel beta series (gen_pbseries).
+    18. Optionally compute functional connectivity (gen_conn).
+    19. Optionally compute connectivity contrasts (gen_conn_contrasts).
+    20. Write QC summary JSON.
 
     Works from both the CLI (main()) and the config-driven dispatch runner
     (run_first_level.py / DISPATCH["task_conn"]).
@@ -608,7 +612,32 @@ def run(args, logger):
     else:
         logger.info("Connectivity will not be output after generating task beta series.")
 
+    # Extract pre-regression parcellated time series if requested
+    if getattr(args, 'extract_raw_ptseries', False):
+        if args.extract_out_file_pre is None:
+            logger.error("extract_raw_ptseries requires extract_out_file_pre to be set.")
+            sys.exit(1)
+        raw_out = os.path.join(args.out_dir, f"{args.extract_out_file_pre}_raw_ptseries.csv")
+        if not os.path.exists(raw_out):
+            if args.template_path is None:
+                logger.error("extract_raw_ptseries requires a valid template_path.")
+                sys.exit(1)
+            validated_tpl = validate_template(args.scan_path, args.template_path,
+                args.out_dir, args.force_diff_atlas, conn_type="extract", logger=logger)
+            raw_df = extract_roi_stats(args.scan_path, validated_tpl, args.average_type, logger=logger)
+            raw_df.to_csv(raw_out)
+            if os.path.exists(raw_out):
+                logger.info("Extracted raw (pre-regression) ptseries to %s.", raw_out)
+            else:
+                logger.error("Failed to extract raw ptseries.")
+                sys.exit(1)
+        else:
+            logger.info("Raw ptseries already exists: %s", raw_out)
+
     # ---------------------------------
+
+    # Extract minimum-outlier representative EPI frame (mandatory, before regression)
+    gen_min_outlier_epi(args.scan_path, args.out_dir, args.out_file_pre, "", logger)
 
     # Generate censor file from motion regressors (before prepare_motion_file overwrites path)
     args.censor_path = create_censor_file(
@@ -775,6 +804,8 @@ def main():
     parser.add_argument("--template_path", type=file_path_exists, required=False)
     parser.add_argument("--contrast_functions", type=valid_string_list, required=False)
     parser.add_argument("--contrast_labels", type=valid_string_list, required=False)
+    parser.add_argument("--extract_raw_ptseries", action='store_true', default=False, required=False,
+                        help="Extract pre-regression parcellated time series (requires --template_path and --extract_out_file_pre).")
     parser.add_argument("--force_diff_atlas", action='store_true', required=False)
     parser.add_argument("--pcorr", action='store_true', required=False)
     parser.add_argument("--fishZ", action='store_true', required=False)

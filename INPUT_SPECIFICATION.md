@@ -137,9 +137,12 @@ extraction:
   extract_stat: "z"                # str; one of: "z", "t", "r"
   extract_out_file_pre: "subj001"  # str; output filename prefix for extracted values
   extract_resids: false            # bool; true = also extract residuals
+  extract_raw_ptseries: false      # bool; true = extract pre-regression parcellated time series
 ```
 
 When `extract: true`, all sub-keys (`extract_labels`, `extract_stat`, `extract_out_file_pre`) are required. Requires `template_path` in global settings.
+
+When `extract_raw_ptseries: true`, `extract_out_file_pre` and `template_path` are required. Extracts ROI-level time series from the raw (pre-regression) scan. Output: `{extract_out_file_pre}_raw_ptseries.csv`. Uses skip-if-exists logic (task_act and task_conn produce identical output when run on the same scan/template).
 
 ---
 
@@ -212,9 +215,10 @@ connectivity:
 extraction:
   extract_pbseries: true           # bool; true = extract parcel beta series
   extract_out_file_pre: "subj001"  # str; required when extract_pbseries is true
+  extract_raw_ptseries: false      # bool; true = extract pre-regression parcellated time series
 ```
 
-Requires `template_path` in global settings.
+Requires `template_path` in global settings. When `extract_raw_ptseries: true`, `extract_out_file_pre` and `template_path` are required. Output: `{extract_out_file_pre}_raw_ptseries.csv`. Skip-if-exists logic prevents redundant extraction when both task_act and task_conn are configured with the same scan/template.
 
 ### Connectivity
 
@@ -279,9 +283,10 @@ All path keys are **lists** with one entry per run. All lists must be the **same
 extraction:
   extract_ptseries: true           # bool; true = extract parcel time series
   extract_out_file_pre: "subj001"  # str; required when extract_ptseries is true
+  extract_raw_ptseries: false      # bool; true = extract pre-regression parcellated time series per run
 ```
 
-Requires `template_path` in global settings.
+Requires `template_path` in global settings. When `extract_raw_ptseries: true`, `extract_out_file_pre` and `template_path` are required. Output: `{extract_out_file_pre}_run{N}_raw_ptseries.csv` (one file per run).
 
 ### Connectivity
 
@@ -344,6 +349,8 @@ stimNeu,66.462,3.967,1
 - **Reader:** `numpy.loadtxt(path)`
 - **Rows:** One row per TR (timepoint). Must match the scan length (enforced by AFNI).
 - **Columns:** 6 base motion parameters (3 translation + 3 rotation), optionally followed by temporal derivatives.
+  - **Column order (required):** `[tx, ty, tz, rx, ry, rz, ...]` -- translations first (columns 1-3), rotations second (columns 4-6). This is the only supported column order. When derivatives are appended, they follow the same `[trans, rot]` pattern (e.g., columns 7-12 are the first temporal derivatives of columns 1-6).
+  - **Units (required):** Translations in **millimeters (mm)**, rotations in **degrees**. The pipeline passes motion values through to AFNI without any unit conversion. Rotations **must** be in degrees -- passing radians will cause AFNI's `1d_tool.py` FD computation to underweight the rotational contribution by approximately 57x (since 1 degree ~ 1 mm of arc at the standard ~57.3 mm head radius, which is AFNI's intended convention).
   - `task_act` / `task_conn` with `include_motion_derivs: false` -> minimum 6 columns used
   - `task_act` / `task_conn` with `include_motion_derivs: true` -> minimum 12 columns used
   - `rest_conn` with `motion_deriv_degree: N` -> minimum `6 * N` columns used
@@ -438,31 +445,37 @@ Schema varies by analysis type:
 
 ### Task Activation (`task_act`)
 
+- `{out_file_pre}_min_outlier_epi.nii.gz` — single-volume EPI frame with the lowest voxelwise outlier fraction (mandatory)
 - `{out_file_pre}_concat_bucket_stats.nii.gz` — AFNI bucket dataset with condition betas, t-stats, and contrasts
 - `{out_file_pre}_concat_censor.1D` — generated censor file
 - `{out_file_pre}_concat_motion_prepared.1D` — validated/truncated motion regressors
 - `{out_file_pre}_concat_{label}_onsets.txt` — per-condition AFNI onset files
 - `{out_file_pre}_qc_summary.json` — QC summary
 - Extracted parcel stats (if `extraction` enabled): CSV files with parcel-level statistics
+- `{extract_out_file_pre}_raw_ptseries.csv` (if `extract_raw_ptseries: true`) — pre-regression parcellated time series
 
 ### Task Connectivity (`task_conn`)
 
+- `{out_file_pre}_min_outlier_epi.nii.gz` — single-volume EPI frame with the lowest voxelwise outlier fraction (mandatory)
 - `{out_file_pre}_concat_bseries_{condition}.nii.gz` — per-condition trial-level beta series from 3dLSS
 - `{out_file_pre}_concat_censor.1D` — generated censor file
 - `{out_file_pre}_concat_motion_prepared.1D` — validated/truncated motion regressors
 - `{out_file_pre}_qc_summary.json` — QC summary
 - Extracted parcel beta series (if `extraction` enabled): CSV files
+- `{extract_out_file_pre}_raw_ptseries.csv` (if `extract_raw_ptseries: true`) — pre-regression parcellated time series
 - Connectivity matrices (if `connectivity` enabled): tab-delimited text files
 - Connectivity contrast outputs (if `contrasts` enabled with connectivity): contrast-level matrices (parcellated) or NIfTI maps (seed-to-voxel), using same naming convention as condition outputs with the sanitized contrast label
 
 ### Resting-State Connectivity (`rest_conn`)
 
+- `{out_file_pre}_run{N}_min_outlier_epi.nii.gz` — per-run single-volume EPI frame with the lowest voxelwise outlier fraction (mandatory)
 - `{out_file_pre}_run{N}_residual_dtseries.nii.gz` — per-run residual time series from 3dTproject
 - `{out_file_pre}_concat_residual_dtseries.nii.gz` — concatenated residual time series
 - `{out_file_pre}_run{N}_censor.1D` — per-run generated censor files
 - `{out_file_pre}_run{N}_motion_prepared.1D` — per-run validated/truncated motion regressors
 - `{out_file_pre}_qc_summary.json` — QC summary
 - Extracted parcel time series (if `extraction` enabled): CSV files
+- `{extract_out_file_pre}_run{N}_raw_ptseries.csv` (if `extract_raw_ptseries: true`) — per-run pre-regression parcellated time series
 - Connectivity matrices (if `connectivity` enabled): tab-delimited text files
 
 ---
