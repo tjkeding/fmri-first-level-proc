@@ -12,9 +12,42 @@
 #   run-first-level --config my_study.yaml --log-file run.log
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.3.1
-# Last updated: 03/13/26
+# Version: 2.4.0
+# Last updated: 04/03/26
 # ============================================================================
+"""
+CLI entry point and dispatch runner for fmri_first_level_proc.
+
+Reads a YAML configuration file, validates it via first_level_config.load_and_validate,
+and dispatches each analysis block to the appropriate pipeline run() function.
+
+Public API
+----------
+main()
+    CLI entry point registered as the ``run-first-level`` console script.
+    Parses --config, --dry-run, --analyses, and --log-file flags.
+
+DISPATCH : dict
+    Mapping from analysis type string (``"task_act"``, ``"task_conn"``,
+    ``"rest_conn"``) to the corresponding pipeline run() function.
+    Available as a public export from the package for programmatic use.
+
+Usage (CLI)
+-----------
+    run-first-level --config my_study.yaml
+    run-first-level --config my_study.yaml --dry-run
+    run-first-level --config my_study.yaml --analyses 0 2
+    run-first-level --config my_study.yaml --log-file run.log
+
+Usage (Python)
+--------------
+    from fmri_first_level_proc import load_and_validate, setup_logging, DISPATCH
+
+    logger = setup_logging("my_analysis")
+    analyses = load_and_validate("my_config.yaml", logger)
+    for atype, ns, name in analyses:
+        DISPATCH[atype](ns, logger)
+"""
 
 import sys
 import time

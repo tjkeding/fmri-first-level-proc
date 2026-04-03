@@ -99,3 +99,4 @@ Raw session transcripts are excluded for privacy reasons. The structured reports
 ## Version History
 
 - **v2.4.0** (2026-04-03): Added motion derivative degree configuration, mandatory minimum-outlier EPI generation, and optional pre-regression parcellated time series extraction. AID artifacts synced for all development cycles through v2.4.0.
+- **v2.4.0-post1** (2026-04-03): Fixed DOF pre-flight check in rest_conn that overestimated regressor count by 3 (stale polort 2 assumption after v2.3.1 changed to polort -1). Updated module docstring and inline comments. Added run_first_level module-level docstring and corrected its version header. Minor signature formatting in first_level_utils.

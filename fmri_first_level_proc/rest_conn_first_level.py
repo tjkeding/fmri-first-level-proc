@@ -38,7 +38,7 @@ INPUTS:
     format = list(string(path_to_GS_TS_txt)); no headers; rows=TR/frame, single column = mean global signal for frame
     NOTE: GSR is controversial — it can remove neural signal and introduce artifactual anti-correlations. Use with caution and report in methods.
 --bandpass: bandpass filter frequencies [low high] in Hz (default: [0.01, 0.1]); set to null in YAML config to disable
---polort: hardcoded to 2 (field consensus with bandpass filtering)
+--polort: hardcoded to -1 (no explicit detrending; bandpass filtering in 3dTproject subsumes polynomial detrending)
 --use_tissue_derivs: (no value) include this option to add first temporal derivatives of tissue signals (CSF/WM, and GS when enabled) as additional nuisance regressors
 --remove_previous: (no value) include this option if "out_dir" should have all files removed before processing starts (including connectivity); if not included, will not overwrite pre-existing files
 --extract_ptseries: include this option if you want residual time series extracted for parcels/ROIs (requires --template_path be provided)
@@ -152,7 +152,7 @@ def gen_residual_ts(args, logger):
             prepared_motion.append(prepared)
 
             # Per-run DOF check
-            n_regressors = use_cols + 3  # polort 2 -> 3 polynomial regressors
+            n_regressors = use_cols  # polort -1 -> 0 polynomial regressors (bandpass subsumes detrending)
             n_regressors += 2  # CSF + WM (always present)
             if args.GS_paths is not None:
                 n_regressors += 1

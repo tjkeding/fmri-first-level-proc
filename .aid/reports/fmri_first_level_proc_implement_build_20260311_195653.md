@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <implement_report>
   <meta project="fmri_first_level_proc" mode="implement" submodule="build" timestamp="2026-03-11T19:56:53Z" />
-  <spec_ref>/Volumes/Backup Plus/Yale Research Faculty/projects/fmri-first-level-proc/fmri_first_level_proc_implement_plan_20260311_195653.md</spec_ref>
+  <spec_ref>fmri_first_level_proc_implement_plan_20260311_195653.md</spec_ref>
   <changes_applied>
 
     <change id="C3" status="done">

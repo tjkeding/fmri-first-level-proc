@@ -211,7 +211,7 @@ def setup_logging(script_name, log_file=None):
 
     return logger
 
-def validate_extract_options(extract_flag_name, average_type, extract_out_file_pre,template_path, scan_path, out_dir, force_diff_atlas,logger=None):
+def validate_extract_options(extract_flag_name, average_type, extract_out_file_pre, template_path, scan_path, out_dir, force_diff_atlas, logger=None):
 
     """Validate extraction-related args for task_conn or rest_conn pipelines.
 
@@ -250,7 +250,7 @@ def validate_extract_options(extract_flag_name, average_type, extract_out_file_p
     return validate_template(scan_path, template_path, out_dir, force_diff_atlas,
                               conn_type="extract", logger=logger)
 
-def validate_connectivity_options(calc_conn, conn_out_file_pre, template_path,scan_path, out_dir, force_diff_atlas,data_label="data", logger=None):
+def validate_connectivity_options(calc_conn, conn_out_file_pre, template_path, scan_path, out_dir, force_diff_atlas, data_label="data", logger=None):
 
     """Validate connectivity-related args for task_conn or rest_conn pipelines.
 
@@ -930,7 +930,7 @@ def get_3dinfo_properties(nifti_path, logger=None):
 # Template/ROI Helpers
 # ----------------------------------------------------------------------------
 
-def validate_template(scan_path, template_path, out_dir, force_diff_atlas,conn_type=None, logger=None):
+def validate_template(scan_path, template_path, out_dir, force_diff_atlas, conn_type=None, logger=None):
 
     """
     Validate a template NIfTI against a scan, checking atlas space, orientation,
@@ -1482,7 +1482,7 @@ def compute_matrix_contrast(condition_matrix_paths, coefs, out_path, logger):
 # Connectivity Functions
 # ----------------------------------------------------------------------------
 
-def seed_to_voxel_conn(inset_path, out_dir, conn_out_file_pre, template_path,fishZ, pcorr, condition=None, logger=None):
+def seed_to_voxel_conn(inset_path, out_dir, conn_out_file_pre, template_path, fishZ, pcorr, condition=None, logger=None):
 
     """
     Run seed-to-voxel functional connectivity using AFNI's 3dNetCorr.
@@ -1644,7 +1644,7 @@ def format_netcorr_mat(netcorr_file, fishZ, pcorr, curr_out_path):
         for row in out_conn_mat:
             f.write("\t".join(str(x) for x in row) + "\n")
 
-def parcellated_conn(inset_path, out_dir, conn_out_file_pre, template_path,fishZ, pcorr, condition=None, logger=None):
+def parcellated_conn(inset_path, out_dir, conn_out_file_pre, template_path, fishZ, pcorr, condition=None, logger=None):
 
     """
     Run parcellated (ROI-to-ROI) functional connectivity using AFNI's 3dNetCorr.
