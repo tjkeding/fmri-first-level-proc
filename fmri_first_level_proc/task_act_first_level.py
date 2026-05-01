@@ -7,8 +7,8 @@
 # 3. (optional) Extract parcel-level/ROI activation with a provided template with AFNI's 3dROIstats
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.4.0
-# Last updated: 04/02/26
+# Version: 2.5.0
+# Last updated: 05/01/26
 # ============================================================================
 '''
 REQUIREMENTS:

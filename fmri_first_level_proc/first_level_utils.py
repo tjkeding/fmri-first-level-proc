@@ -5,8 +5,8 @@
 # Common functions used across task_act, task_conn, and rest_conn pipelines.
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.4.0
-# Last updated: 04/02/26
+# Version: 2.5.0
+# Last updated: 05/01/26
 # ============================================================================
 """
 Shared utility functions for the fmri_first_level_proc package.
@@ -729,6 +729,145 @@ def notch_filter_motion(motion_path, tr, stopband, out_dir, out_prefix, label, l
     os.replace(transposed_path, out_path)
 
     logger.info("Notch-filtered motion parameters (rows=TRs, cols=params) saved to %s", out_path)
+    return out_path
+
+def censor_interpolate_1d_afni(input_path, tr, censor_path, out_dir, out_prefix, label, logger):
+    """
+    Interpolate censored TRs in a nuisance regressor 1D file using AFNI 3dTproject -cenmode NTRP.
+
+    Invokes ``3dTproject`` with ``-cenmode NTRP`` to replace censored TRs with
+    interpolated values in the input 1D file.  Because AFNI interprets .1D files
+    as rows=voxels, cols=timepoints, the input is presented to 3dTproject with a
+    trailing apostrophe (AFNI transpose operator) so the time axis is read
+    correctly.  After the command executes, 3dTproject writes its output in the
+    transposed orientation (rows=columns, cols=TRs); ``1dtranspose`` is applied to
+    restore rows=TRs, cols=columns for all downstream consumers.  This function is
+    intended for sequenced denoising pipelines where censored TRs must be
+    interpolated in nuisance regressors (e.g., tissue signals, motion parameters)
+    before bandpass filtering so that the frequency-domain operation is not
+    contaminated by zero-fill or mean-imputation artefacts.
+
+    Parameters
+    ----------
+    input_path : str
+        Path to the input 1D file (rows=TRs orientation) whose censored TRs will
+        be interpolated.
+    tr : float
+        Repetition time in seconds; passed to 3dTproject via ``-dt``.
+    censor_path : str
+        Path to the AFNI-format censor file (1=keep, 0=censor).
+    out_dir : str
+        Output directory for the interpolated file.
+    out_prefix : str
+        Filename prefix used to construct the output filename.
+    label : str
+        Descriptive label appended to the output filename (e.g., ``"CSF"``).
+    logger : logging.Logger
+        Logger for info and error messages.
+
+    Returns
+    -------
+    str
+        Absolute path to the interpolated 1D file in rows=TRs, cols=columns
+        orientation.
+    """
+    out_path = os.path.join(out_dir, f"{out_prefix}_{label}_interp.1D")
+
+    cmd = ["3dTproject",
+           "-polort", "-1",
+           "-dt", str(tr),
+           "-input", f"{input_path}'",
+           "-censor", censor_path,
+           "-cenmode", "NTRP",
+           "-prefix", out_path]
+
+    run_afni_command(cmd, description=f"3dTproject NTRP interpolate {label}", logger=logger)
+
+    if not os.path.exists(out_path):
+        logger.error("Expected NTRP-interpolated 1D file not found: %s", out_path)
+        sys.exit(1)
+
+    # Restore rows=TRs, cols=cols orientation (3dTproject output is transposed)
+    transposed_path = out_path + ".transposed.1D"
+    transpose_cmd = ["1dtranspose", out_path, transposed_path]
+    run_afni_command(transpose_cmd, description=f"1dtranspose interpolate {label}", logger=logger)
+    if not os.path.exists(transposed_path):
+        logger.error("1dtranspose failed for interpolated 1D file: %s", out_path)
+        sys.exit(1)
+    os.replace(transposed_path, out_path)
+
+    logger.info("NTRP-interpolated 1D file (rows=TRs, cols=cols) saved to %s", out_path)
+    return out_path
+
+def bandpass_filter_1d_afni(input_path, tr, bandpass, out_dir, out_prefix, label, logger):
+    """
+    Bandpass-filter a nuisance regressor 1D file using AFNI 3dBandpass -nodetrend.
+
+    Invokes ``3dBandpass`` with ``-nodetrend`` to apply a bandpass filter to the
+    input 1D file over the passband specified by ``bandpass[0]`` (fbot) and
+    ``bandpass[1]`` (ftop).  The ``-nodetrend`` flag is required to preserve
+    consistency with the ``polort -1`` convention used throughout the pipeline
+    (i.e., no polynomial detrending is applied here, because detrending is handled
+    separately), and the passband matches the BOLD bandpass step so that nuisance
+    regressors and BOLD data share the same frequency content.  Because AFNI
+    interprets .1D files as rows=voxels, cols=timepoints, the input is presented to
+    3dBandpass with a trailing apostrophe (AFNI transpose operator) so the time axis
+    is read correctly.  After the command executes, 3dBandpass writes its output in
+    the transposed orientation (rows=columns, cols=TRs); ``1dtranspose`` is applied
+    to restore rows=TRs, cols=columns for all downstream consumers.  This function
+    is intended for use after ``censor_interpolate_1d_afni``, filtering interpolated
+    nuisance regressors (e.g., tissue signals, motion parameters) at the same
+    passband as the BOLD signal before they enter the final regression model.
+
+    Parameters
+    ----------
+    input_path : str
+        Path to the input 1D file (rows=TRs orientation) to be bandpass-filtered.
+    tr : float
+        Repetition time in seconds; passed to 3dBandpass via ``-dt``.
+    bandpass : list or tuple of float
+        Two-element sequence ``[fbot, ftop]`` specifying the lower and upper
+        frequency bounds of the passband in Hz.
+    out_dir : str
+        Output directory for the filtered file.
+    out_prefix : str
+        Filename prefix used to construct the output filename.
+    label : str
+        Descriptive label appended to the output filename (e.g., ``"CSF"``).
+    logger : logging.Logger
+        Logger for info and error messages.
+
+    Returns
+    -------
+    str
+        Absolute path to the bandpass-filtered 1D file in rows=TRs, cols=columns
+        orientation.
+    """
+    out_path = os.path.join(out_dir, f"{out_prefix}_{label}_bp.1D")
+
+    cmd = ["3dBandpass",
+           "-nodetrend",
+           "-dt", str(tr),
+           "-prefix", out_path,
+           str(bandpass[0]), str(bandpass[1]),
+           f"{input_path}'"]
+
+    run_afni_command(cmd, description=f"3dBandpass {label}", logger=logger)
+
+    if not os.path.exists(out_path):
+        logger.error("Expected bandpass-filtered 1D file not found: %s", out_path)
+        sys.exit(1)
+
+    # Restore rows=TRs, cols=cols orientation (3dBandpass output is transposed)
+    transposed_path = out_path + ".transposed.1D"
+    transpose_cmd = ["1dtranspose", out_path, transposed_path]
+    run_afni_command(transpose_cmd, description=f"1dtranspose {label}", logger=logger)
+    if not os.path.exists(transposed_path):
+        logger.error("1dtranspose failed for bandpass-filtered 1D file: %s", out_path)
+        sys.exit(1)
+    os.replace(transposed_path, out_path)
+
+    logger.info("Bandpass-filtered 1D file (rows=TRs, cols=cols) saved to %s", out_path)
     return out_path
 
 def compute_tissue_derivative(tissue_path, out_dir, out_prefix, tissue_label, logger):

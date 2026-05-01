@@ -12,8 +12,8 @@
 #   run-first-level --config my_study.yaml --log-file run.log
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.4.0
-# Last updated: 04/03/26
+# Version: 2.5.0
+# Last updated: 05/01/26
 # ============================================================================
 """
 CLI entry point and dispatch runner for fmri_first_level_proc.

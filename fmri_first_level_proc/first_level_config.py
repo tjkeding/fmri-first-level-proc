@@ -7,8 +7,8 @@
 # compatible with each script's run() function.
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.4.0
-# Last updated: 04/02/26
+# Version: 2.5.0
+# Last updated: 05/01/26
 # ============================================================================
 """
 YAML configuration loader, validator, and namespace builder for fmri_first_level_proc.
@@ -71,7 +71,7 @@ REQUIRED_PATHS = {
 }
 
 # Keys that are actual boolean flags
-BOOL_KEYS = ("remove_previous", "include_motion_derivs", "use_tissue_derivs", "censor_prev_tr")
+BOOL_KEYS = ("remove_previous", "include_motion_derivs", "use_tissue_derivs", "censor_prev_tr", "use_sequenced_bandpass")
 
 # Keys that are always read from global (block values ignored)
 GLOBAL_ONLY_KEYS = ("num_cores", "template_path", "force_diff_atlas", "tr")
@@ -582,6 +582,7 @@ def build_namespace(merged_block, logger):
         ns.bandpass = merged_block["bandpass"]   # Required, always a [low, high] list
         ns.motion_deriv_degree = int(merged_block["motion_deriv_degree"])
         ns.use_tissue_derivs = bool(merged_block.get("use_tissue_derivs", False))
+        ns.use_sequenced_bandpass = bool(merged_block.get("use_sequenced_bandpass", False))
         val = merged_block.get("keep_run_res_dtseries")
         ns.keep_run_res_dtseries = val if val is not None else True
 

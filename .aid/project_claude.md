@@ -15,7 +15,7 @@ fmri_first_level_proc/               # Repository root
 ├── pyproject.toml                    # pip-installable packaging config
 ├── .gitignore                        # Ignored files when pushing to GitHub
 ├── README.md                         # GitHub README.md (primarily for future users)
-├── INPUT_SPECIFICATION.toml          # GitHub input spec file (primarily for future LLMs)
+├── INPUT_SPECIFICATION.md            # GitHub input spec file (primarily for future LLMs)
 ├── fmri_first_level_proc/            # Python package
 │   ├── __init__.py                   # Package init with public API exports
 │   ├── first_level_utils.py          # Shared utilities (logging, AFNI wrappers, ROI extraction, connectivity)

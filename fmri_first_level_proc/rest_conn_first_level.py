@@ -8,8 +8,8 @@
 # 4. (optional) Runs functional connectivity analysis with AFNI's 3dNetCorr
 #
 # Author: Taylor J. Keding, Ph.D.
-# Version: 2.4.0
-# Last updated: 04/02/26
+# Version: 2.5.0
+# Last updated: 05/01/26
 # ============================================================================
 '''
 REQUIREMENTS:
@@ -54,6 +54,7 @@ INPUTS:
 --pcorr: (no value) include this option to use partial correlation instead of standard correlation for functional connectivity
 --fishZ: (no value) include this option if correlation 'r' should be Fisher-transformed into z-scores
 --keep_run_res_dtseries: (default True) keep per-run residual dtseries files after concatenation; use --no-keep_run_res_dtseries to remove them
+--use_sequenced_bandpass: (no value) include this option to use the sequenced denoising path (interpolate censored TRs, bandpass-filter BOLD and nuisance separately, then regress nuisance) instead of the default simultaneous path. Reduces bandpass-implied regressor DOF cost.
 
 OUTPUTS:
 (always)
@@ -77,6 +78,7 @@ import os
 import sys
 import argparse
 import time
+import shutil
 
 import numpy as np
 import pandas as pd
@@ -102,7 +104,241 @@ from .first_level_utils import (
     validate_extract_options,
     validate_connectivity_options,
     gen_min_outlier_epi,
+    censor_interpolate_1d_afni,
+    bandpass_filter_1d_afni,
 )
+
+def _generate_run_residual_simultaneous(run_idx, run_scan, censor_path, prepared_motion, args, logger):
+    """Generate per-run residual via simultaneous 3dTproject (regression + bandpass + censoring).
+
+    Implements the default rest_conn denoising path: a single 3dTproject call with
+    -ort regressors, -bandpass, -censor X.1D, -cenmode ZERO. Bandpass-implied
+    sin/cos basis vectors are subsumed into the projection at the same step as
+    nuisance regression.
+
+    Parameters
+    ----------
+    run_idx : int
+        Zero-based run index (used for logging and accessing per-run path lists).
+    run_scan : str
+        Path to the run's pre-residualisation dtseries.
+    censor_path : str
+        Path to the run's censor.1D file (binary 1=keep, 0=censor).
+    prepared_motion : str
+        Path to the run's prepared motion file (motion_deriv_degree*6 columns).
+    args : argparse.Namespace
+        Pipeline arguments. Must include CSF_paths, WM_paths, GS_paths,
+        use_tissue_derivs, polort handling (hardcoded -1), bandpass, out_dir,
+        out_file_pre, tr.
+    logger : logging.Logger
+
+    Returns
+    -------
+    str or None
+        Path to the run's residual dtseries, or None on 3dTproject failure.
+    """
+    run_out = os.path.join(args.out_dir, f"{args.out_file_pre}_run{run_idx+1}_residual_dtseries.nii.gz")
+
+    if os.path.exists(run_out):
+        return run_out
+
+    tproj_command = ["3dTproject", "-input", run_scan,
+        "-dt", str(args.tr),
+        "-censor", censor_path,
+        "-cenmode", "ZERO",
+        "-ort", prepared_motion,
+        "-ort", args.CSF_paths[run_idx],
+        "-ort", args.WM_paths[run_idx]]
+    if args.GS_paths is not None:
+        tproj_command.extend(["-ort", args.GS_paths[run_idx]])
+    if args.use_tissue_derivs:
+        csf_deriv = compute_tissue_derivative(args.CSF_paths[run_idx], args.out_dir, args.out_file_pre, f"run{run_idx+1}_CSF", logger)
+        tproj_command.extend(["-ort", csf_deriv])
+        wm_deriv = compute_tissue_derivative(args.WM_paths[run_idx], args.out_dir, args.out_file_pre, f"run{run_idx+1}_WM", logger)
+        tproj_command.extend(["-ort", wm_deriv])
+        if args.GS_paths is not None:
+            gs_deriv = compute_tissue_derivative(args.GS_paths[run_idx], args.out_dir, args.out_file_pre, f"run{run_idx+1}_GS", logger)
+            tproj_command.extend(["-ort", gs_deriv])
+    tproj_command.extend(["-polort", "-1"])
+    if args.bandpass is not None:
+        tproj_command.extend(["-bandpass", str(args.bandpass[0]), str(args.bandpass[1])])
+    tproj_command.extend(["-prefix", run_out])
+
+    try:
+        run_afni_command(tproj_command, description=f"3dTproject run{run_idx+1}", logger=logger)
+    except Exception as e:
+        logger.error("3dTproject failed for run %d: %s", run_idx+1, e)
+        return None
+
+    if os.path.exists(run_out):
+        logger.info("Successfully created residual dtseries for %s_run%d.", args.out_file_pre, run_idx+1)
+        return run_out
+    else:
+        logger.error("Failed to create residual dtseries for %s_run%d.", args.out_file_pre, run_idx+1)
+        return None
+
+
+def _generate_run_residual_sequenced(run_idx, run_scan, censor_path, prepared_motion, args, logger):
+    """Generate per-run residual via sequenced denoising (Ciric-inspired).
+
+    Six-step flow:
+      (1) Confounds already generated upstream (motion, censor, tissue signals).
+      (2-3) 3dTproject -polort -1 -censor X.1D -cenmode NTRP on BOLD to interpolate
+           censored TRs.
+      (4) 3dBandpass -nodetrend on interpolated BOLD to band-limit the signal.
+      (5) For each nuisance regressor file (motion, CSF, WM, optional GS, optional
+          tissue derivatives), apply the same NTRP-interp + 3dBandpass pipeline
+          using censor_interpolate_1d_afni and bandpass_filter_1d_afni.
+      (6) 3dTproject -polort -1 -ort filtered_motion -ort filtered_CSF [...] (no
+          -bandpass, no -censor) on filtered BOLD to produce raw residual.
+      (post) 3dcalc -a residual.nii.gz -b censor.1D -expr 'a*b' to zero residuals
+           at originally-censored TRs (preserves output convention).
+
+    Tissue derivatives are computed on the RAW tissue signal (existing
+    compute_tissue_derivative behavior) and then routed through the same
+    NTRP-interp + bandpass pipeline as the base regressors so all -ort regressors
+    are frequency-equivalent to the BOLD passband (Hallquist 2013 doctrine).
+
+    Per-run intermediate files are written to
+    {args.out_dir}/_sequenced_intermediates/run{N}/ and removed at the end of
+    this function unless args.keep_run_res_dtseries is True. On step-6 or
+    post-step failure, the directory is preserved regardless of flag value
+    so the user can inspect the intermediate state.
+
+    Parameters
+    ----------
+    run_idx : int
+    run_scan : str
+    censor_path : str
+    prepared_motion : str
+    args : argparse.Namespace
+        Must include: CSF_paths, WM_paths, GS_paths, use_tissue_derivs,
+        bandpass, keep_run_res_dtseries, out_dir, out_file_pre, tr.
+    logger : logging.Logger
+
+    Returns
+    -------
+    str or None
+        Path to the run's residual dtseries, or None on failure.
+    """
+    run_out = os.path.join(args.out_dir, f"{args.out_file_pre}_run{run_idx+1}_residual_dtseries.nii.gz")
+
+    if os.path.exists(run_out):
+        return run_out
+
+    inter_dir = os.path.join(args.out_dir, "_sequenced_intermediates", f"run{run_idx+1}")
+    os.makedirs(inter_dir, exist_ok=True)
+
+    label = f"run{run_idx+1}"
+    success = False
+    try:
+        # Step 2-3: NTRP interpolate BOLD
+        bold_interp = os.path.join(inter_dir, f"{args.out_file_pre}_{label}_bold_interp.nii.gz")
+        interp_cmd = ["3dTproject",
+                      "-polort", "-1",
+                      "-dt", str(args.tr),
+                      "-input", run_scan,
+                      "-censor", censor_path,
+                      "-cenmode", "NTRP",
+                      "-prefix", bold_interp]
+        run_afni_command(interp_cmd, description=f"3dTproject NTRP BOLD {label}", logger=logger)
+        if not os.path.exists(bold_interp):
+            logger.error("Sequenced step 2-3 failed: BOLD interpolation missing for %s.", label)
+            return None
+
+        # Step 4: 3dBandpass BOLD
+        bold_bp = os.path.join(inter_dir, f"{args.out_file_pre}_{label}_bold_bp.nii.gz")
+        bp_cmd = ["3dBandpass",
+                  "-nodetrend",
+                  "-dt", str(args.tr),
+                  "-prefix", bold_bp,
+                  str(args.bandpass[0]), str(args.bandpass[1]),
+                  bold_interp]
+        run_afni_command(bp_cmd, description=f"3dBandpass BOLD {label}", logger=logger)
+        if not os.path.exists(bold_bp):
+            logger.error("Sequenced step 4 failed: BOLD bandpass missing for %s.", label)
+            return None
+
+        # Step 5: filter each nuisance regressor (interp -> bandpass).
+        # Tissue derivatives are computed on the RAW signal and then routed
+        # through the same filter pipeline as base regressors.
+        def _filter_1d(src_path, lbl):
+            interp_path = censor_interpolate_1d_afni(
+                src_path, args.tr, censor_path, inter_dir, args.out_file_pre, lbl, logger)
+            bp_path = bandpass_filter_1d_afni(
+                interp_path, args.tr, args.bandpass, inter_dir, args.out_file_pre, lbl, logger)
+            return bp_path
+
+        filtered_motion = _filter_1d(prepared_motion, f"{label}_motion")
+        filtered_csf = _filter_1d(args.CSF_paths[run_idx], f"{label}_CSF")
+        filtered_wm = _filter_1d(args.WM_paths[run_idx], f"{label}_WM")
+
+        ort_args = ["-ort", filtered_motion, "-ort", filtered_csf, "-ort", filtered_wm]
+
+        if args.GS_paths is not None:
+            filtered_gs = _filter_1d(args.GS_paths[run_idx], f"{label}_GS")
+            ort_args.extend(["-ort", filtered_gs])
+
+        if args.use_tissue_derivs:
+            csf_deriv_raw = compute_tissue_derivative(
+                args.CSF_paths[run_idx], inter_dir, args.out_file_pre, f"{label}_CSF_deriv_raw", logger)
+            filtered_csf_deriv = _filter_1d(csf_deriv_raw, f"{label}_CSF_deriv")
+            ort_args.extend(["-ort", filtered_csf_deriv])
+            wm_deriv_raw = compute_tissue_derivative(
+                args.WM_paths[run_idx], inter_dir, args.out_file_pre, f"{label}_WM_deriv_raw", logger)
+            filtered_wm_deriv = _filter_1d(wm_deriv_raw, f"{label}_WM_deriv")
+            ort_args.extend(["-ort", filtered_wm_deriv])
+            if args.GS_paths is not None:
+                gs_deriv_raw = compute_tissue_derivative(
+                    args.GS_paths[run_idx], inter_dir, args.out_file_pre, f"{label}_GS_deriv_raw", logger)
+                filtered_gs_deriv = _filter_1d(gs_deriv_raw, f"{label}_GS_deriv")
+                ort_args.extend(["-ort", filtered_gs_deriv])
+
+        # Step 6: nuisance regression on filtered BOLD with filtered orts.
+        # No -bandpass, no -censor; -polort -1 (rest_conn convention).
+        residual_pre_mask = os.path.join(inter_dir, f"{args.out_file_pre}_{label}_residual_premask.nii.gz")
+        reg_cmd = ["3dTproject",
+                   "-polort", "-1",
+                   "-dt", str(args.tr),
+                   "-input", bold_bp] + ort_args + ["-prefix", residual_pre_mask]
+        run_afni_command(reg_cmd, description=f"3dTproject sequenced regression {label}", logger=logger)
+        if not os.path.exists(residual_pre_mask):
+            logger.error("Sequenced step 6 failed: regression output missing for %s.", label)
+            return None
+
+        # Post-step: zero residuals at originally-censored TRs via 3dcalc
+        # broadcasting the censor.1D file across the time axis.
+        calc_cmd = ["3dcalc",
+                    "-a", residual_pre_mask,
+                    "-b", censor_path,
+                    "-expr", "a*b",
+                    "-prefix", run_out]
+        run_afni_command(calc_cmd, description=f"3dcalc post-step zero censored TRs {label}", logger=logger)
+        if not os.path.exists(run_out):
+            logger.error("Sequenced post-step failed: censored-zero residual missing for %s.", label)
+            return None
+
+        logger.info("Successfully created sequenced residual dtseries for %s_run%d.", args.out_file_pre, run_idx+1)
+        success = True
+        return run_out
+
+    except Exception as e:
+        logger.error("Sequenced denoising failed for run %d: %s", run_idx+1, e)
+        return None
+
+    finally:
+        # Cleanup intermediates per S5b-ii. Preserve on failure regardless of flag.
+        if success and not args.keep_run_res_dtseries:
+            try:
+                shutil.rmtree(inter_dir)
+                logger.info("Removed sequenced intermediates for %s.", label)
+            except Exception as e:
+                logger.warning("Unable to remove sequenced intermediates for %s: %s", label, e)
+        elif not success:
+            logger.info("Preserving sequenced intermediates at %s for inspection (failure).", inter_dir)
+        else:
+            logger.info("Keeping sequenced intermediates at %s (keep_run_res_dtseries=True).", inter_dir)
+
 
 def gen_residual_ts(args, logger):
     """Generate per-run residual dense time series and concatenate across runs.
@@ -111,6 +347,13 @@ def gen_residual_ts(args, logger):
     censor file, runs a DOF check (warns and skips runs with DOF < 1), then calls
     3dTproject to regress out motion, tissue signals, and optional bandpass filtering.
     Surviving runs are concatenated via 3dTcat.
+
+    The per-run residual generation dispatches to one of two backends based on
+    args.use_sequenced_bandpass: simultaneous (default; single 3dTproject call
+    with -ort, -bandpass, -censor, -cenmode ZERO) or sequenced (Ciric-inspired
+    six-step flow: NTRP-interpolate, 3dBandpass, filter nuisance, regress, mask
+    censored TRs). Shared setup (motion preparation, censor generation, DOF
+    check) and teardown (concatenation, cleanup) are identical across paths.
 
     Parameters
     ----------
@@ -152,7 +395,7 @@ def gen_residual_ts(args, logger):
             prepared_motion.append(prepared)
 
             # Per-run DOF check
-            n_regressors = use_cols  # polort -1 -> 0 polynomial regressors (bandpass subsumes detrending)
+            n_regressors = use_cols  # polort -1 -> 0 polynomial regressors (bandpass subsumes detrending in simultaneous path; sequenced path applies bandpass to BOLD/orts separately at step 4-5, so step-6 ort count matches)
             n_regressors += 2  # CSF + WM (always present)
             if args.GS_paths is not None:
                 n_regressors += 1
@@ -172,48 +415,19 @@ def gen_residual_ts(args, logger):
                 logger.warning("Run %d has insufficient degrees of freedom (DOF=%d). Skipping this run.", i+1, per_run_dof[i])
                 continue
 
-            run_out = os.path.join(args.out_dir, f"{args.out_file_pre}_run{i+1}_residual_dtseries.nii.gz")
-
-            # Check if this run's residual dtseries already exists
-            if not os.path.exists(run_out):
-
-                # Build 3dTproject command
-                tproj_command = ["3dTproject", "-input", run_scan,
-                    "-dt", str(args.tr),
-                    "-censor", censor_paths[i],
-                    "-cenmode", "ZERO",
-                    "-ort", prepared_motion[i],
-                    "-ort", args.CSF_paths[i],
-                    "-ort", args.WM_paths[i]]
-                if args.GS_paths is not None:
-                    tproj_command.extend(["-ort", args.GS_paths[i]])
-                if args.use_tissue_derivs:
-                    csf_deriv = compute_tissue_derivative(args.CSF_paths[i], args.out_dir, args.out_file_pre, f"run{i+1}_CSF", logger)
-                    tproj_command.extend(["-ort", csf_deriv])
-                    wm_deriv = compute_tissue_derivative(args.WM_paths[i], args.out_dir, args.out_file_pre, f"run{i+1}_WM", logger)
-                    tproj_command.extend(["-ort", wm_deriv])
-                    if args.GS_paths is not None:
-                        gs_deriv = compute_tissue_derivative(args.GS_paths[i], args.out_dir, args.out_file_pre, f"run{i+1}_GS", logger)
-                        tproj_command.extend(["-ort", gs_deriv])
-                tproj_command.extend(["-polort", "-1"])  # Field consensus with bandpass
-                if args.bandpass is not None:
-                    tproj_command.extend(["-bandpass", str(args.bandpass[0]), str(args.bandpass[1])])
-                tproj_command.extend(["-prefix", run_out])
-
-                # Run command and check output
-                try:
-                    run_afni_command(tproj_command, description=f"3dTproject run{i+1}", logger=logger)
-                except Exception as e:
-                    logger.error("3dTproject failed for run %d: %s", i+1, e)
-                    continue
-
-                if os.path.exists(run_out):
-                    logger.info("Successfully created residual dtseries for %s_run%d.", args.out_file_pre, i+1)
-                    completed_runs.append(run_out)
-                else:
-                    logger.error("Failed to create residual dtseries for %s_run%d.", args.out_file_pre, i+1)
+            # Dispatch to selected backend based on args.use_sequenced_bandpass
+            if args.use_sequenced_bandpass:
+                run_out = _generate_run_residual_sequenced(
+                    i, run_scan, censor_paths[i], prepared_motion[i], args, logger)
             else:
-                completed_runs.append(run_out)
+                run_out = _generate_run_residual_simultaneous(
+                    i, run_scan, censor_paths[i], prepared_motion[i], args, logger)
+
+            if run_out is None:
+                # Backend logged the specific failure; skip this run.
+                continue
+
+            completed_runs.append(run_out)
 
         if not completed_runs:
             logger.error("No runs were successfully processed for %s. Aborting.", args.out_file_pre)
@@ -510,6 +724,8 @@ def main():
                         help="Keep per-run residual dtseries files after concatenation (default: True). Use --no-keep_run_res_dtseries to remove them.")
     parser.add_argument("--use_tissue_derivs", action='store_true', default=False, required=False,
                         help="Include first temporal derivatives of tissue signals (CSF/WM/GS) as additional nuisance regressors.")
+    parser.add_argument("--use_sequenced_bandpass", action='store_true', default=False, required=False,
+                        help="Use sequenced denoising path: censor-interpolate, bandpass, then nuisance-regress (Ciric-inspired). Default False = simultaneous 3dTproject path. Opt in when DOF pressure from -bandpass implied regressors is excessive.")
 
     args = parser.parse_args()
     logger = setup_logging("rest_conn_first_level")

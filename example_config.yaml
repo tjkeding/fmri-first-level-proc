@@ -179,6 +179,7 @@ analyses:
     motion_deriv_degree: 2       # Required: number of derivative orders (total motion cols = 6 * degree); e.g. 2 = base + 1st derivs = 12 cols
     keep_run_res_dtseries: true  # true = keep all run-specific dtseries (false to save space)
     use_tissue_derivs: false     # true = include first temporal derivatives of tissue signals (CSF/WM/GS) as additional regressors
+    use_sequenced_bandpass: false  # true = use sequenced denoising path (Ciric-inspired): NTRP-interpolate -> 3dBandpass -> regress (no -bandpass at regression). Opt in for high-motion data where bandpass-implied DOF cost is excessive.
 
     # -- Extraction --
     extraction:
