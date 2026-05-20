@@ -1027,11 +1027,10 @@ def run_afni_command(command, capture_output=False, description="", logger=None)
         return result
     except subprocess.CalledProcessError as e:
         desc = f" ({description})" if description else ""
-        msg = f"AFNI command failed{desc}: {' '.join(command)}"
-        if e.stderr:
-            msg += f"\n  stderr: {e.stderr.strip()}"
         if logger:
-            logger.error(msg)
+            logger.error("AFNI command failed%s: %s", desc, " ".join(command))
+            if e.stderr:
+                logger.error("stderr: %s", e.stderr.strip())
         raise
 
 def get_3dinfo_properties(nifti_path, logger=None):
@@ -1307,7 +1306,7 @@ def gen_min_outlier_epi(scan_path, out_dir, out_file_pre, label, logger):
         return out_path
 
     # Run 3dToutcount to get per-TR outlier fractions
-    toutcount_cmd = ["3dToutcount", "-automask", "-fraction", "-quiet", scan_path]
+    toutcount_cmd = ["3dToutcount", "-automask", "-fraction", scan_path]
     try:
         toutcount_out = run_afni_command(
             toutcount_cmd, capture_output=True,
