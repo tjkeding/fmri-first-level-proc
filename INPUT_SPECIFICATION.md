@@ -274,6 +274,7 @@ All path keys are **lists** with one entry per run. All lists must be the **same
 | `notch_filter_band` | list of 2 floats or null | `null` | Respiration artifact notch filter Hz band: `[low, high]`. Must satisfy `0 < low < high`. Applied to motion regressors before censor file generation. Set to `null` to disable. |
 | `keep_run_res_dtseries` | bool | `true` | `true` = retain per-run residual dtseries files. `false` = delete after concatenation. |
 | `use_tissue_derivs` | bool | `false` | `true` = include first temporal derivatives of tissue signals (CSF, WM, and GS when enabled) as additional nuisance regressors. |
+| `use_sequenced_bandpass` | bool | `false` | `true` = use the sequenced denoising path (Ciric et al. 2017): BOLD and nuisance regressors are NTRP-interpolated at censored TRs and bandpass-filtered separately before final nuisance regression. Eliminates the DOF cost of bandpass-implied regressors in the regression model. Requires `bandpass` to be set; ignored if `bandpass` is null. Intermediate files are written to `{out_dir}/_sequenced_intermediates/run{N}/`; removed after each run unless `keep_run_res_dtseries: true` or on failure. |
 | `extraction` | dict or null | `null` | Parcel time series extraction. See below. |
 | `connectivity` | dict or null | `null` | Functional connectivity computation. See below. |
 
@@ -477,6 +478,7 @@ Schema varies by analysis type:
 - Extracted parcel time series (if `extraction` enabled): CSV files
 - `{extract_out_file_pre}_run{N}_raw_ptseries.csv` (if `extract_raw_ptseries: true`) — per-run pre-regression parcellated time series
 - Connectivity matrices (if `connectivity` enabled): tab-delimited text files
+- `{out_dir}/_sequenced_intermediates/run{N}/` (if `use_sequenced_bandpass: true`) — per-run intermediate files (NTRP-interpolated BOLD, bandpass-filtered BOLD, NTRP-interpolated and bandpass-filtered nuisance regressors). Removed after each run unless `keep_run_res_dtseries: true`; preserved on failure regardless of flag.
 
 ---
 
